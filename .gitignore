@@ -6,3 +6,4 @@ firebase-service-account*.json
 *.log
 coverage/
 .DS_Store
+desktop.ini

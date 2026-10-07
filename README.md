@@ -254,7 +254,7 @@ Use long random values for every secret in production. `DB_POOL_SIZE` (default 2
 
 The `Dockerfile` applies the schema (`node scripts/migrate.js`, which is safe to re-run and adds any missing indexes) and then starts the API, so any container host works. These steps use [Railway](https://railway.com):
 
-1. Create a project with **Deploy from GitHub repo** and pick this repository. Railway builds the `Dockerfile`.
+1. Create a project with **Deploy from GitHub repo** and pick this repository. Railway builds the `Dockerfile` and reads `railway.json` (health check on `/health`, one replica, restart on failure).
 2. In the same project, add **New → Database → MySQL**.
 3. On the API service's **Variables** tab, set:
 
@@ -269,19 +269,21 @@ The `Dockerfile` applies the schema (`node scripts/migrate.js`, which is safe to
    QR_SIGNING_SECRET=<random>
    PAYMENT_GATEWAY_KEY=<random>
    DEVICE_API_KEY=<random>
-   CORS_ORIGIN=<your front-end origin>
-   PUBLIC_URL=https://<your-service>.up.railway.app
+   CORS_ORIGIN=<your front-end origin(s), comma-separated>
+   ALLOW_MOCK_PAYMENTS=true
    ```
 
+   Do not set `PORT`: Railway provides it. `PUBLIC_URL` defaults to the service's Railway domain, so set it only for a custom domain. `ALLOW_MOCK_PAYMENTS=true` is required for now: `mock` is the only gateway implemented, and without it the API refuses to start in production.
+
    Generate each random value with `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
-4. Under **Settings → Networking**, generate a domain, set `PUBLIC_URL` to it and redeploy.
+4. Under **Settings → Networking**, generate a domain and redeploy (so `RAILWAY_PUBLIC_DOMAIN` is set).
 5. Check `https://<your-domain>/health`: it should return `{"status":"ok"}`.
 
 Notes:
 
 - In production the app refuses to start with `PAYMENT_GATEWAY=mock` unless `ALLOW_MOCK_PAYMENTS=true`. That is acceptable for a demo; real payments need a real gateway.
 - Run a **single instance**: the latest vehicle positions and Socket.IO rooms live in memory.
-- For demo data, run `railway run npm run seed` (demo accounts only, never on a real deployment).
+- For demo data, open a shell in the running service with `railway ssh` and run `ALLOW_DEMO_SEED=true node scripts/seed.js` (demo accounts only, never on a real deployment). `railway run` does not work for this: it runs on your machine, which cannot reach the private `mysql.railway.internal` host.
 
 ## 📡 API reference
 

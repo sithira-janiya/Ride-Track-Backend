@@ -17,17 +17,33 @@ export function declaredIndexes(sql) {
   return found;
 }
 
+/** On a fresh deploy the database (or the platform's private DNS) can take a few seconds to come up, so retry the connect. */
+async function connectWithRetry(options, attempts = Number(process.env.DB_CONNECT_RETRIES) || 10) {
+  for (let i = 1; ; i++) {
+    try {
+      return await mysql.createConnection(options);
+    } catch (e) {
+      if (i >= attempts || e.code === 'ER_ACCESS_DENIED_ERROR' || e.code === 'ER_BAD_DB_ERROR') throw e;
+      console.log(`Database not reachable yet (${e.code ?? e.message}), retrying in 3s (${i}/${attempts})`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
 export async function migrate() {
   const sql = await readFile(fileURLToPath(new URL('../db/schema.sql', import.meta.url)), 'utf8');
-  const conn = await mysql.createConnection({
-    host: env.db.host,
-    port: env.db.port,
-    user: env.db.user,
-    password: env.db.password,
-    database: env.db.database,
-    ssl: env.db.ssl ? { rejectUnauthorized: true } : undefined,
-    multipleStatements: true,
-  });
+  const conn = await connectWithRetry(
+    {
+      host: env.db.host,
+      port: env.db.port,
+      user: env.db.user,
+      password: env.db.password,
+      database: env.db.database,
+      ssl: env.db.ssl ? { rejectUnauthorized: true } : undefined,
+      multipleStatements: true,
+    },
+    env.isTest ? 1 : undefined,
+  );
   try {
     await conn.query(sql);
     // CREATE TABLE IF NOT EXISTS skips existing tables, so add any declared index they are missing

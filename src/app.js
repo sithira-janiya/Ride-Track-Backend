@@ -35,7 +35,7 @@ export function createApp() {
     });
   }
   app.use(helmet());
-  app.use(cors({ origin: env.corsOrigin === '*' ? true : env.corsOrigin.split(',') }));
+  app.use(cors({ origin: env.corsOrigin }));
   // keep the raw bytes: the payment webhook signature is computed over them
   app.use(express.json({ limit: '100kb', verify: (req, _res, buf) => (req.rawBody = buf.toString('utf8')) }));
 

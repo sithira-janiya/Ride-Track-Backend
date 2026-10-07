@@ -16,14 +16,23 @@ const int = (name, fallback) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+function corsOrigins(value) {
+  const list = value.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean);
+  return list.length === 0 || list.includes('*') ? true : list;
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   isProd,
   isTest,
   port: int('PORT', 3000),
   /** Public base URL of this API (used to build payment page links). */
-  publicUrl: process.env.PUBLIC_URL ?? `http://localhost:${int('PORT', 3000)}`,
-  corsOrigin: process.env.CORS_ORIGIN ?? '*',
+  publicUrl: (
+    process.env.PUBLIC_URL ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${int('PORT', 3000)}`)
+  ).replace(/\/+$/, ''),
+  /** `true` (reflect any origin) for "*", otherwise the comma-separated list of allowed origins. */
+  corsOrigin: corsOrigins(process.env.CORS_ORIGIN ?? '*'),
   db: {
     host: process.env.DB_HOST ?? 'localhost',
     port: int('DB_PORT', 3306),
