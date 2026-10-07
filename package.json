@@ -14,7 +14,8 @@
     "seed": "node scripts/seed.js",
     "seed:reset": "node scripts/seed.js --reset",
     "simulate": "node scripts/simulate.js",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "readme": "node scripts/update-readme.js"
   },
   "jest": {
     "testEnvironment": "node",
