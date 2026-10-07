@@ -1,0 +1,51 @@
+# Local development and demos.
+#   docker compose up -d db          just MySQL (run the API with `npm run dev`)
+#   docker compose up -d --build     MySQL + the API in a container
+# Passwords here are throwaway development values. Real deployments set their own via environment variables.
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    command: --default-time-zone=+00:00 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: root_dev
+      MYSQL_DATABASE: ridetrack
+      MYSQL_USER: ridetrack
+      MYSQL_PASSWORD: ridetrack_dev
+    ports:
+      - "3307:3306" # 3307 on your machine so it does not clash with a local MySQL
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uridetrack", "-pridetrack_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      PUBLIC_URL: http://localhost:3000
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: ridetrack
+      DB_PASSWORD: ridetrack_dev
+      DB_NAME: ridetrack
+      JWT_ACCESS_SECRET: dev-only-access-secret-change-me
+      QR_SIGNING_SECRET: dev-only-qr-secret-change-me
+      PAYMENT_GATEWAY: mock
+      ALLOW_MOCK_PAYMENTS: "true"
+      PAYMENT_GATEWAY_KEY: dev-only-gateway-key-change-me
+      DEVICE_API_KEY: dev-only-device-key-change-me
+    ports:
+      - "3000:3000"
+
+volumes:
+  dbdata:
