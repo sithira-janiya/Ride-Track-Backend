@@ -1,6 +1,6 @@
 import { query } from '../../config/db.js';
 import { badRequest } from '../../utils/errors.js';
-import { describe } from '../vehicles/service.js';
+import { describeMany } from '../vehicles/service.js';
 
 /** Live picture for the authority dashboard (FR9): every reporting vehicle, recent delays and an occupancy summary. */
 export async function dashboard() {
@@ -8,14 +8,10 @@ export async function dashboard() {
     `SELECT v.*, r.route_no, r.mode FROM vehicles v JOIN routes r ON r.route_id = v.route_id
       WHERE v.is_active = TRUE ORDER BY r.route_no, v.vehicle_id`,
   );
-  const vehicles = (
-    await Promise.all(
-      rows.map(async (v) => {
-        const d = await describe(v);
-        return d && { ...d, routeId: v.route_id, routeNo: v.route_no, mode: v.mode };
-      }),
-    )
-  ).filter(Boolean);
+  const described = await describeMany(rows);
+  const vehicles = rows
+    .map((v, i) => described[i] && { ...described[i], routeId: v.route_id, routeNo: v.route_no, mode: v.mode })
+    .filter(Boolean);
 
   const alerts = await query(
     `SELECT * FROM delay_alerts WHERE type IN ('DELAY','CANCELLATION') AND created_at > UTC_TIMESTAMP() - INTERVAL 12 HOUR

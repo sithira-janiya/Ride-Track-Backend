@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS delay_alerts (
   delay_minutes  SMALLINT UNSIGNED NULL,
   created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_alert_trip (trip_id),
+  INDEX idx_alert_type_time (type, created_at),
   FOREIGN KEY (trip_id) REFERENCES trips(trip_id)
 );
 

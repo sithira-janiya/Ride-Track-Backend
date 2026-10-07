@@ -22,9 +22,16 @@ async function etaToNextStop(routeId, mode, pos, now = new Date()) {
   return liveEta(pos, stops, cumulativeMeters(stops), next, mode, now);
 }
 
-async function latestOccupancy(vehicleId) {
-  const [row] = await query('SELECT passenger_count FROM occupancy_log WHERE vehicle_id = ? ORDER BY occ_id DESC LIMIT 1', [vehicleId]);
-  return row?.passenger_count ?? null;
+/** Newest passenger count per vehicle in one query (vehicleId -> count), instead of one query per vehicle. */
+async function latestOccupancies(vehicleIds) {
+  if (!vehicleIds.length) return new Map();
+  const rows = await query(
+    `SELECT o.vehicle_id, o.passenger_count
+       FROM occupancy_log o
+       JOIN (SELECT vehicle_id, MAX(occ_id) AS id FROM occupancy_log WHERE vehicle_id IN (?) GROUP BY vehicle_id) m ON m.id = o.occ_id`,
+    [vehicleIds],
+  );
+  return new Map(rows.map((r) => [r.vehicle_id, r.passenger_count]));
 }
 
 /** GPS ingest: store, cache, and broadcast to everyone watching the vehicle's route (NFR2: within 5 s). */
@@ -62,11 +69,17 @@ export async function getRouteVehicles(routeId) {
     'SELECT v.*, r.mode FROM vehicles v JOIN routes r ON r.route_id = v.route_id WHERE v.route_id = ? AND v.is_active = TRUE ORDER BY v.vehicle_id',
     [routeId],
   );
-  return (await Promise.all(vehicles.map((v) => describe(v)))).filter(Boolean);
+  return (await describeMany(vehicles)).filter(Boolean);
+}
+
+/** `describe` for a list of vehicles, with occupancy fetched in a single query. Entries are null for vehicles that never reported. */
+export async function describeMany(vehicles) {
+  const occupancy = await latestOccupancies(vehicles.map((v) => v.vehicle_id));
+  return Promise.all(vehicles.map((v) => describe(v, occupancy)));
 }
 
 /** One vehicle as the app shows it: position, ETA and occupancy. Null when it has never reported. */
-export async function describe(v) {
+export async function describe(v, occupancy = null) {
   const pos = await getLatest(v.vehicle_id);
   if (!pos) return null;
   const eta = await etaToNextStop(v.route_id, v.mode, pos);
@@ -77,7 +90,7 @@ export async function describe(v) {
     lng: pos.lng,
     eta: eta ? eta.toISOString() : null,
     recordedAt: pos.recordedAt.toISOString(),
-    passengerCount: (await latestOccupancy(v.vehicle_id)) ?? undefined,
+    passengerCount: (occupancy ?? (await latestOccupancies([v.vehicle_id]))).get(v.vehicle_id) ?? undefined,
     capacity: v.capacity,
   };
 }
