@@ -248,7 +248,40 @@ Copy `.env.example` to `.env`. Key variables:
 | `FCM_SERVICE_ACCOUNT` | Optional Firebase service-account JSON for push notifications |
 | `ENABLE_JOBS` | Toggle background jobs |
 
-Use long random values for every secret in production.
+Use long random values for every secret in production. `DB_POOL_SIZE` (default 20) sets the MySQL connection pool size.
+
+## ☁️ Deployment
+
+The `Dockerfile` applies the schema (`node scripts/migrate.js`, which is safe to re-run and adds any missing indexes) and then starts the API, so any container host works. These steps use [Railway](https://railway.com):
+
+1. Create a project with **Deploy from GitHub repo** and pick this repository. Railway builds the `Dockerfile`.
+2. In the same project, add **New → Database → MySQL**.
+3. On the API service's **Variables** tab, set:
+
+   ```text
+   NODE_ENV=production
+   DB_HOST=${{MySQL.MYSQLHOST}}
+   DB_PORT=${{MySQL.MYSQLPORT}}
+   DB_USER=${{MySQL.MYSQLUSER}}
+   DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}
+   DB_NAME=${{MySQL.MYSQLDATABASE}}
+   JWT_ACCESS_SECRET=<random>
+   QR_SIGNING_SECRET=<random>
+   PAYMENT_GATEWAY_KEY=<random>
+   DEVICE_API_KEY=<random>
+   CORS_ORIGIN=<your front-end origin>
+   PUBLIC_URL=https://<your-service>.up.railway.app
+   ```
+
+   Generate each random value with `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
+4. Under **Settings → Networking**, generate a domain, set `PUBLIC_URL` to it and redeploy.
+5. Check `https://<your-domain>/health`: it should return `{"status":"ok"}`.
+
+Notes:
+
+- In production the app refuses to start with `PAYMENT_GATEWAY=mock` unless `ALLOW_MOCK_PAYMENTS=true`. That is acceptable for a demo; real payments need a real gateway.
+- Run a **single instance**: the latest vehicle positions and Socket.IO rooms live in memory.
+- For demo data, run `railway run npm run seed` (demo accounts only, never on a real deployment).
 
 ## 📡 API reference
 
