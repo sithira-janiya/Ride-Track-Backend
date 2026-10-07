@@ -2,6 +2,7 @@
 -- Based on docs/06-database-mysql.md in the RideTrack Development repo, plus:
 --   users.notifications_enabled   (PATCH /users/me notification preference)
 --   refresh_tokens                (rotating refresh tokens, stored hashed)
+--   users.role 'ADMIN'            (manages staff and officer accounts; signs in through /admin/auth)
 -- Applied by `npm run migrate`. Safe to run more than once.
 
 CREATE TABLE IF NOT EXISTS users (
@@ -10,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
   email                 VARCHAR(150) NULL UNIQUE,
   phone                 VARCHAR(20)  NULL UNIQUE,
   password_hash         VARCHAR(255) NOT NULL,
-  role                  ENUM('PASSENGER','STAFF','AUTHORITY') NOT NULL DEFAULT 'PASSENGER',
+  role                  ENUM('PASSENGER','STAFF','AUTHORITY','ADMIN') NOT NULL DEFAULT 'PASSENGER',
   language              VARCHAR(10)  NOT NULL DEFAULT 'en',
   push_token            VARCHAR(512) NULL,
   notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE,

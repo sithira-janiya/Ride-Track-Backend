@@ -13,6 +13,7 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "seed:reset": "node scripts/seed.js --reset",
+    "create-admin": "node scripts/create-admin.js",
     "simulate": "node scripts/simulate.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
     "readme": "node scripts/update-readme.js"

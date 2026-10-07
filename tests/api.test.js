@@ -17,8 +17,13 @@ const PASSWORD = 'Password1!';
 const app = createApp();
 const api = () => request(app);
 
-const login = async (identifier) => {
-  const res = await api().post('/api/v1/auth/login').send({ identifier, password: PASSWORD });
+const login = async (identifier, password = PASSWORD) => {
+  const res = await api().post('/api/v1/auth/login').send({ identifier, password });
+  expect(res.status).toBe(200);
+  return { token: res.body.data.accessToken, refresh: res.body.data.refreshToken, user: res.body.data.user };
+};
+const adminLogin = async (email, password = PASSWORD) => {
+  const res = await api().post('/api/v1/admin/auth/login').send({ email, password });
   expect(res.status).toBe(200);
   return { token: res.body.data.accessToken, refresh: res.body.data.refreshToken, user: res.body.data.user };
 };
@@ -146,6 +151,127 @@ describe('auth', () => {
     expect((await api().patch('/api/v1/users/me').set(auth(passenger.token)).send({ language: 'xx' })).status).toBe(400);
     expect((await api().put('/api/v1/users/me/push-token').set(auth(passenger.token)).send({ token: 'fcm-token-1234567890' })).status).toBe(200);
     await api().patch('/api/v1/users/me').set(auth(passenger.token)).send({ notificationsEnabled: true });
+  });
+});
+
+describe('admin', () => {
+  let admin;
+  const users = () => api().get('/api/v1/admin/users');
+  const create = (body) => api().post('/api/v1/admin/users').set(auth(admin.token)).send(body);
+  const setActive = (userId, isActive, token = admin.token) => api().patch(`/api/v1/admin/users/${userId}`).set(auth(token)).send({ isActive });
+  const conductor = { role: 'STAFF', name: 'New Conductor', email: 'conductor2@ridetrack.test', password: 'Passw0rdOK', employeeNo: 'ST-002', organisation: 'Demo Transport Co.', staffType: 'INSPECTOR', vehicleId: 102 };
+
+  beforeAll(async () => {
+    admin = await adminLogin('admin@ridetrack.test');
+  });
+
+  it('signs admins in only through the admin endpoint, with one error for every failure', async () => {
+    expect(admin.user.role).toBe('ADMIN');
+    const viaApp = await api().post('/api/v1/auth/login').send({ identifier: 'admin@ridetrack.test', password: PASSWORD });
+    expect(viaApp.status).toBe(401);
+    expect(viaApp.body.error.code).toBe('INVALID_CREDENTIALS');
+    const officerAsAdmin = await api().post('/api/v1/admin/auth/login').send({ email: 'officer@ridetrack.test', password: PASSWORD });
+    const wrongPassword = await api().post('/api/v1/admin/auth/login').send({ email: 'admin@ridetrack.test', password: 'WrongPass1' });
+    expect(officerAsAdmin.status).toBe(401);
+    expect(officerAsAdmin.body).toEqual(wrongPassword.body);
+  });
+
+  it('keeps admin and app sessions apart when refreshing, and keeps admin sessions short', async () => {
+    const { refresh } = await adminLogin('admin@ridetrack.test');
+    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: refresh })).status).toBe(401);
+    const rotated = await api().post('/api/v1/admin/auth/refresh').send({ refreshToken: refresh });
+    expect(rotated.status).toBe(200);
+    expect((await api().post('/api/v1/admin/auth/refresh').send({ refreshToken: refresh })).status).toBe(401);
+    const hash = crypto.createHash('sha256').update(rotated.body.data.refreshToken).digest('hex');
+    const [{ hours }] = await query('SELECT TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), expires_at) / 60 AS hours FROM refresh_tokens WHERE token_hash = ?', [hash]);
+    expect(Number(hours)).toBeLessThanOrEqual(env.adminRefreshTtlHours);
+
+    // an app refresh token is refused by the admin endpoint and is not used up by the attempt
+    const app = await login('passenger@ridetrack.test');
+    expect((await api().post('/api/v1/admin/auth/refresh').send({ refreshToken: app.refresh })).status).toBe(401);
+    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: app.refresh })).status).toBe(200);
+  });
+
+  it('logs out by revoking the refresh token', async () => {
+    const { refresh } = await adminLogin('admin@ridetrack.test');
+    expect((await api().post('/api/v1/admin/auth/logout').send({ refreshToken: refresh })).status).toBe(200);
+    expect((await api().post('/api/v1/admin/auth/refresh').send({ refreshToken: refresh })).status).toBe(401);
+  });
+
+  it('lets only admins manage accounts', async () => {
+    expect((await users()).status).toBe(401);
+    expect((await users().set(auth(officer.token))).status).toBe(403);
+    expect((await users().set(auth(passenger.token))).status).toBe(403);
+    const res = await api().get('/api/v1/admin/users?role=AUTHORITY').set(auth(admin.token));
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((u) => u.email)).toContain('officer@ridetrack.test');
+    expect(res.body.data.every((u) => u.role === 'AUTHORITY')).toBe(true);
+    expect(res.body.data[0].passwordHash).toBeUndefined();
+    expect((await api().get('/api/v1/admin/users?q=%25').set(auth(admin.token))).body.data).toHaveLength(0);
+  });
+
+  it('creates staff and officer accounts that can sign in to the app', async () => {
+    const staffRes = await create(conductor);
+    expect(staffRes.status).toBe(201);
+    expect(staffRes.body.data).toMatchObject({ role: 'STAFF', email: 'conductor2@ridetrack.test', isActive: true });
+    const [profile] = await query('SELECT employee_no, staff_type, vehicle_id FROM staff WHERE user_id = ?', [staffRes.body.data.userId]);
+    expect(profile).toEqual({ employee_no: 'ST-002', staff_type: 'INSPECTOR', vehicle_id: 102 });
+    expect((await login('conductor2@ridetrack.test', conductor.password)).user.role).toBe('STAFF');
+
+    const officerRes = await create({ role: 'AUTHORITY', name: 'New Officer', phone: '0779876543', password: 'Passw0rdOK', employeeNo: 'AU-002', department: 'Transport Authority' });
+    expect(officerRes.status).toBe(201);
+    expect(officerRes.body.data.role).toBe('AUTHORITY');
+    const [officerRow] = await query('SELECT department FROM authority_officers WHERE user_id = ?', [officerRes.body.data.userId]);
+    expect(officerRow.department).toBe('Transport Authority');
+  });
+
+  it('validates new accounts', async () => {
+    expect((await create({ ...conductor, email: 'other@ridetrack.test' })).status).toBe(409); // employee number taken
+    expect((await create({ ...conductor, email: 'other@ridetrack.test', employeeNo: 'ST-003', vehicleId: 999 })).status).toBe(400);
+    expect((await create({ ...conductor, employeeNo: undefined })).status).toBe(400);
+    expect((await create({ ...conductor, role: 'PASSENGER' })).status).toBe(400);
+    expect((await create({ role: 'ADMIN', name: 'Short', email: 'short@ridetrack.test', password: 'Passw0rdOK' })).status).toBe(400); // admins need 12+ characters
+    expect((await create({ role: 'ADMIN', name: 'No Email', phone: '0771112223', password: 'LongPassw0rdOK' })).status).toBe(400);
+    const [{ n }] = await query("SELECT COUNT(*) AS n FROM users WHERE email IN ('other@ridetrack.test', 'short@ridetrack.test')");
+    expect(n).toBe(0);
+  });
+
+  it('disables an account, ending its sessions, and enables it again', async () => {
+    const reg = await api().post('/api/v1/auth/register').send({ name: 'To Disable', email: 'disable-me@example.com', password: 'Passw0rdOK' });
+    const { userId } = reg.body.data.user;
+    const off = await setActive(userId, false);
+    expect(off.status).toBe(200);
+    expect(off.body.data.isActive).toBe(false);
+    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: reg.body.data.refreshToken })).status).toBe(401);
+    expect((await api().post('/api/v1/auth/login').send({ identifier: 'disable-me@example.com', password: 'Passw0rdOK' })).status).toBe(401);
+    expect((await setActive(userId, true)).body.data.isActive).toBe(true);
+    expect((await login('disable-me@example.com', 'Passw0rdOK')).user.userId).toBe(userId);
+
+    expect((await setActive(admin.user.userId, false)).body.error.code).toBe('CANNOT_DISABLE_SELF');
+    expect((await setActive(999999, false)).status).toBe(404);
+    expect((await setActive(userId, false, officer.token)).status).toBe(403);
+  });
+
+  it('cuts a disabled admin off at once, before the access token expires', async () => {
+    const res = await create({ role: 'ADMIN', name: 'Second Admin', email: 'admin2@ridetrack.test', password: 'LongPassw0rdOK' });
+    expect(res.status).toBe(201);
+    const second = await adminLogin('admin2@ridetrack.test', 'LongPassw0rdOK');
+    expect((await users().set(auth(second.token))).status).toBe(200);
+    await setActive(second.user.userId, false);
+    expect((await users().set(auth(second.token))).status).toBe(401);
+  });
+
+  it('creates the first admin, or resets an admin password, from the command line', async () => {
+    const { createAdmin } = await import('../scripts/create-admin.js');
+    expect(await createAdmin({ email: 'Ops@RideTrack.test', name: 'Ops Admin', password: 'FirstPassw0rd' })).toEqual({ created: true });
+    const ops = await adminLogin('ops@ridetrack.test', 'FirstPassw0rd');
+
+    expect(await createAdmin({ email: 'ops@ridetrack.test', password: 'SecondPassw0rd' })).toEqual({ created: false });
+    expect((await api().post('/api/v1/admin/auth/refresh').send({ refreshToken: ops.refresh })).status).toBe(401); // old sessions ended
+    await adminLogin('ops@ridetrack.test', 'SecondPassw0rd');
+
+    await expect(createAdmin({ email: 'officer@ridetrack.test', password: 'LongPassw0rdOK' })).rejects.toThrow('role AUTHORITY');
+    await expect(createAdmin({ email: 'new@ridetrack.test', password: 'short1' })).rejects.toThrow('password');
   });
 });
 

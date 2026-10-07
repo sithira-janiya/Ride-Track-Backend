@@ -1,6 +1,8 @@
 import jwt from 'jsonwebtoken';
 
+import { query } from '../config/db.js';
 import { env } from '../config/env.js';
+import { wrap } from '../utils/async.js';
 import { forbidden, unauthorized } from '../utils/errors.js';
 
 /** Reads `Authorization: Bearer <accessToken>` and sets `req.user = { id, role }`. */
@@ -23,6 +25,20 @@ export const requireRole =
   (...roles) =>
   (req, _res, next) =>
     roles.includes(req.user?.role) ? next() : next(forbidden('Your account type cannot do this.'));
+
+/**
+ * Admin-only routes. Besides an admin access token, the account is re-read on every request,
+ * so a disabled admin loses access at once instead of when the token expires.
+ */
+export const requireAdmin = [
+  requireAuth,
+  requireRole('ADMIN'),
+  wrap(async (req, _res, next) => {
+    const [row] = await query('SELECT role, is_active FROM users WHERE user_id = ?', [req.user.id]);
+    if (row?.role !== 'ADMIN' || !row.is_active) throw unauthorized('Please log in again.');
+    next();
+  }),
+];
 
 export function verifyAccessToken(token) {
   const payload = jwt.verify(token, env.jwtAccessSecret);

@@ -17,6 +17,20 @@ export function declaredIndexes(sql) {
   return found;
 }
 
+/** The quoted values in `'A','B'` or `enum('A','B')`. */
+export const enumValues = (s) => s.match(/'[^']*'/g) ?? [];
+
+/** ENUM columns declared inside CREATE TABLE blocks: [{ table, column, values, definition }]. */
+export function declaredEnums(sql) {
+  const found = [];
+  for (const [, table, body] of sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(([\s\S]*?)\n\);/gi)) {
+    for (const [, column, definition, list] of body.matchAll(/^\s*(\w+)\s+(ENUM\(([^)]*)\)[^,\n]*)/gim)) {
+      found.push({ table, column, values: enumValues(list), definition: `${column} ${definition.trim()}` });
+    }
+  }
+  return found;
+}
+
 /** On a fresh deploy the database (or the platform's private DNS) can take a few seconds to come up, so retry the connect. */
 async function connectWithRetry(options, attempts = Number(process.env.DB_CONNECT_RETRIES) || 10) {
   for (let i = 1; ; i++) {
@@ -53,6 +67,22 @@ export async function migrate() {
       if (have.has(`${ix.table}.${ix.name}`.toLowerCase())) continue;
       await conn.query(`ALTER TABLE ${ix.table} ADD ${ix.unique ? 'UNIQUE ' : ''}INDEX ${ix.name} (${ix.columns})`);
       console.log(`Added index ${ix.name} on ${ix.table}`);
+    }
+    // and widen ENUM columns that gained values (e.g. users.role 'ADMIN'); never drop a value existing rows may hold
+    const [columns] = await conn.query(
+      "SELECT table_name AS t, column_name AS c, column_type AS type FROM information_schema.columns WHERE table_schema = DATABASE() AND data_type = 'enum'",
+    );
+    for (const col of declaredEnums(sql)) {
+      const current = columns.find((r) => `${r.t}.${r.c}`.toLowerCase() === `${col.table}.${col.column}`.toLowerCase());
+      if (!current) continue;
+      const have = enumValues(current.type);
+      if (col.values.every((v) => have.includes(v))) continue;
+      if (have.some((v) => !col.values.includes(v))) {
+        console.warn(`Skipped ${col.table}.${col.column}: the schema removes ENUM values rows may use. Change this column by hand.`);
+        continue;
+      }
+      await conn.query(`ALTER TABLE ${col.table} MODIFY ${col.definition}`);
+      console.log(`Added ENUM values to ${col.table}.${col.column}`);
     }
   } finally {
     await conn.end();

@@ -69,6 +69,8 @@ export async function seed({ reset = false } = {}) {
       ['Demo Conductor', 'staff@ridetrack.test', 'STAFF'],
       ['Demo Officer', 'officer@ridetrack.test', 'AUTHORITY'],
     ];
+    // an admin with a published password could take over every account, so production demos use scripts/create-admin.js instead
+    if (!env.isProd) users.push(['Demo Admin', 'admin@ridetrack.test', 'ADMIN']);
     const ids = [];
     for (const [name, email, role] of users) {
       ids.push((await query('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)', [name, email, hash, role])).insertId);
@@ -114,6 +116,6 @@ async function seedTrips() {
 
 if (process.argv[1]?.endsWith('seed.js')) {
   await seed({ reset: process.argv.includes('--reset') });
-  console.log('Seed complete. Demo accounts: passenger@ridetrack.test, staff@ridetrack.test, officer@ridetrack.test');
+  console.log(`Seed complete. Demo accounts: passenger@ridetrack.test, staff@ridetrack.test, officer@ridetrack.test${env.isProd ? '' : ', admin@ridetrack.test'}`);
   await pool.end();
 }

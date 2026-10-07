@@ -7,8 +7,9 @@ import helmet from 'helmet';
 import { env } from './config/env.js';
 import { pool } from './config/db.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
+import adminUsersRouter from './modules/admin/routes.js';
 import alertsRouter from './modules/alerts/routes.js';
-import authRouter from './modules/auth/routes.js';
+import authRouter, { adminAuthRouter } from './modules/auth/routes.js';
 import { opsRouter, reportsRouter } from './modules/ops/routes.js';
 import paymentsRouter from './modules/payments/routes.js';
 import { routesRouter, stopsRouter, tripsRouter } from './modules/routes/routes.js';
@@ -62,6 +63,8 @@ export function createApp() {
   v1.use('/alerts', alertsRouter);
   v1.use('/ops', opsRouter);
   v1.use('/reports', reportsRouter);
+  v1.use('/admin/auth', adminAuthRouter);
+  v1.use('/admin/users', adminUsersRouter);
   app.use('/api/v1', v1);
 
   app.use(notFoundHandler);

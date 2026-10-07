@@ -28,10 +28,10 @@ Live tracking · QR ticketing · Payments · Delay alerts
 <!-- STATS:START -->
 <table>
   <tr>
-    <td align="center"><h2>32</h2>REST endpoints</td>
+    <td align="center"><h2>38</h2>REST endpoints</td>
     <td align="center"><h2>17</h2>DB tables</td>
-    <td align="center"><h2>9</h2>API modules</td>
-    <td align="center"><h2>47</h2>automated tests</td>
+    <td align="center"><h2>10</h2>API modules</td>
+    <td align="center"><h2>58</h2>automated tests</td>
     <td align="center"><h2>4</h2>background jobs</td>
     <td align="center"><h2>11</h2>runtime deps</td>
   </tr>
@@ -41,13 +41,14 @@ Live tracking · QR ticketing · Payments · Delay alerts
 
 ## 🧭 Overview
 
-RideTrack is the REST + WebSocket backend for a public transport app, built around three roles:
+RideTrack is the REST + WebSocket backend for a public transport app, built around three app roles and an admin:
 
 <table>
   <tr>
-    <td width="33%" valign="top"><h3>🧑 Passenger</h3>Browse routes and stops, follow vehicles live, buy tickets, get delay alerts.</td>
-    <td width="33%" valign="top"><h3>🎟️ Staff</h3>Scan and validate QR tickets, report vehicle occupancy.</td>
-    <td width="33%" valign="top"><h3>🛠️ Authority</h3>Manage routes and trips, watch the live dashboard, publish alerts, run reports.</td>
+    <td width="25%" valign="top"><h3>🧑 Passenger</h3>Browse routes and stops, follow vehicles live, buy tickets, get delay alerts.</td>
+    <td width="25%" valign="top"><h3>🎟️ Staff</h3>Scan and validate QR tickets, report vehicle occupancy.</td>
+    <td width="25%" valign="top"><h3>🛠️ Authority</h3>Manage routes and trips, watch the live dashboard, publish alerts, run reports.</td>
+    <td width="25%" valign="top"><h3>🔐 Admin</h3>Create staff, officer and admin accounts; disable and re-enable accounts.</td>
   </tr>
 </table>
 
@@ -55,7 +56,8 @@ GPS devices on vehicles authenticate separately with a shared device key.
 
 ## ✨ Features
 
-- 🔐 **JWT auth** with short-lived access tokens, rotating refresh tokens and role-based access control (`PASSENGER`, `STAFF`, `AUTHORITY`)
+- 🔐 **JWT auth** with short-lived access tokens, rotating refresh tokens and role-based access control (`PASSENGER`, `STAFF`, `AUTHORITY`, `ADMIN`)
+- 🔑 **Separate admin sign-in** with a tighter rate limit, 12-hour sessions, 12+ character passwords and an account check on every admin request
 - 📍 **Live tracking**: GPS ingestion, per-route Socket.IO rooms, live ETA vs. timetable
 - 🎫 **QR ticketing**: signed QR payloads, staff validation, manual-ID fallback, cancellation
 - 💳 **Payments**: pluggable gateway, HMAC-signed webhooks, mock checkout for development
@@ -221,6 +223,7 @@ This starts MySQL and the API together. The compose file uses throwaway developm
 | 🧑 Passenger | `passenger@ridetrack.test` |
 | 🎟️ Staff | `staff@ridetrack.test` |
 | 🛠️ Authority | `officer@ridetrack.test` |
+| 🔐 Admin | `admin@ridetrack.test` (signs in at `/admin/auth/login`; not seeded when `NODE_ENV=production`) |
 
 > Demo data only. Never seed these accounts into a real deployment.
 
@@ -242,6 +245,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `CORS_ORIGIN` | `*` or a comma-separated list of allowed origins |
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSL` | MySQL connection |
 | `JWT_ACCESS_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL_DAYS` | Token signing and lifetimes |
+| `ADMIN_REFRESH_TTL_HOURS` | Admin session length (default 12) |
 | `QR_SIGNING_SECRET` | Signs ticket QR payloads |
 | `PAYMENT_GATEWAY`, `PAYMENT_GATEWAY_KEY` | Gateway selection and webhook signing key (`mock` for development) |
 | `DEVICE_API_KEY` | Shared key GPS devices send as `x-device-key` |
@@ -278,6 +282,7 @@ The `Dockerfile` applies the schema (`node scripts/migrate.js`, which is safe to
    Generate each random value with `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
 4. Under **Settings → Networking**, generate a domain and redeploy (so `RAILWAY_PUBLIC_DOMAIN` is set).
 5. Check `https://<your-domain>/health`: it should return `{"status":"ok"}`.
+6. Create the first admin: open a shell with `railway ssh` and run `node scripts/create-admin.js --email you@example.com`. It prints a generated password once (or uses `ADMIN_PASSWORD` if set). Running it again for the same email resets the password and signs that admin out everywhere. Further admins can be added from `POST /admin/users`.
 
 Notes:
 
@@ -300,6 +305,23 @@ Base URL: `/api/v1`. Send `Authorization: Bearer <accessToken>` unless noted. Br
 | `GET` | `/users/me` | 🔑 Any user | Current profile |
 | `PATCH` | `/users/me` | 🔑 Any user | Update profile |
 | `PUT` | `/users/me/push-token` | 🔑 Any user | Register a push token |
+
+</details>
+
+
+<details open>
+<summary><b>Admin</b></summary>
+
+Admins cannot use `/auth/login` or `/auth/refresh`, and app accounts cannot use the admin sign-in. Create the first admin with `npm run create-admin -- --email you@example.com`.
+
+| Method | Endpoint | Access | Description |
+| --- | --- | --- | --- |
+| `POST` | `/admin/auth/login` | 🌐 Public | Admin sign-in with `{ email, password }` |
+| `POST` | `/admin/auth/refresh` | 🌐 Public | Rotate an admin refresh token |
+| `POST` | `/admin/auth/logout` | 🌐 Public | Revoke an admin refresh token |
+| `GET` | `/admin/users` | 🔐 Admin | List accounts (`role`, `q`, `page`, `limit`) |
+| `POST` | `/admin/users` | 🔐 Admin | Create a `STAFF`, `AUTHORITY` or `ADMIN` account |
+| `PATCH` | `/admin/users/:id` | 🔐 Admin | Disable (ends its sessions) or re-enable an account |
 
 </details>
 
@@ -387,14 +409,14 @@ socket.on('vehicle:location', (pos) => console.log(pos));
 ```text
 ├── db/schema.sql            # MySQL schema
 ├── docker/                  # DB init scripts (test database)
-├── scripts/                 # migrate, seed, simulate
+├── scripts/                 # migrate, seed, simulate, create-admin
 ├── src/
 │   ├── app.js               # Express app and route wiring
 │   ├── server.js            # HTTP + Socket.IO bootstrap
 │   ├── config/              # env and DB pool
 │   ├── middleware/          # auth, validation, error handling
 │   ├── modules/             # auth, users, routes, vehicles, tickets,
-│   │                        # payments, scans, alerts, ops
+│   │                        # payments, scans, alerts, ops, admin
 │   ├── realtime/            # Socket.IO rooms and emitters
 │   ├── jobs/                # cron jobs
 │   └── utils/               # ETA, geo, errors, async helpers

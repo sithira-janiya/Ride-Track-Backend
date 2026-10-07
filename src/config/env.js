@@ -44,6 +44,8 @@ export const env = {
   jwtAccessSecret: secret('JWT_ACCESS_SECRET', 'dev-access-secret-change-me'),
   jwtRefreshTtlDays: int('JWT_REFRESH_TTL_DAYS', 30),
   accessTtl: process.env.JWT_ACCESS_TTL ?? '15m',
+  /** Admin refresh tokens last hours, not days: an admin signs in again at least this often. */
+  adminRefreshTtlHours: int('ADMIN_REFRESH_TTL_HOURS', 12),
   qrSigningSecret: secret('QR_SIGNING_SECRET', 'dev-qr-secret-change-me'),
   paymentGateway: process.env.PAYMENT_GATEWAY ?? 'mock',
   paymentGatewayKey: secret('PAYMENT_GATEWAY_KEY', 'dev-gateway-key-change-me'),
