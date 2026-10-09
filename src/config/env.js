@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import 'dotenv/config';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -10,6 +13,8 @@ const secret = (name, devDefault) => {
   if (isProd) throw new Error(`Missing required environment variable ${name}`);
   return devDefault;
 };
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const int = (name, fallback) => {
   const n = Number.parseInt(process.env[name] ?? '', 10);
@@ -53,6 +58,10 @@ export const env = {
   deviceApiKey: secret('DEVICE_API_KEY', 'dev-device-key-change-me'),
   fcmServiceAccount: process.env.FCM_SERVICE_ACCOUNT ?? '',
   enableJobs: (process.env.ENABLE_JOBS ?? (isTest ? 'false' : 'true')) === 'true',
+  /** Android APK served at /download/android (relative paths are from the project root). */
+  apkPath: path.resolve(rootDir, process.env.APK_PATH || 'downloads/ridetrack.apk'),
+  /** If set, /download/android redirects here instead of serving APK_PATH (e.g. a GitHub release asset). */
+  apkUrl: process.env.APK_URL || '',
   /** A vehicle position older than this is treated as "not live" when working out ETAs. */
   livePositionMaxAgeMs: int('LIVE_POSITION_MAX_AGE_SECONDS', 120) * 1000,
 };

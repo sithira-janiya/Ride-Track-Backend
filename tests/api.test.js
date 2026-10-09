@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 
 import { io as connect } from 'socket.io-client';
 import request from 'supertest';
@@ -86,6 +89,48 @@ describe('health', () => {
     const res = await api().get('/api/v1/nope');
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+});
+
+describe('app download', () => {
+  const saved = { apkPath: env.apkPath, apkUrl: env.apkUrl };
+  afterEach(() => Object.assign(env, saved));
+
+  it('serves the APK as an Android download', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-apk-'));
+    fs.mkdirSync(path.join(dir, '.hidden')); // deployments can live under dot-folders (e.g. .claude/worktrees)
+    env.apkPath = path.join(dir, '.hidden', 'app.apk');
+    fs.writeFileSync(env.apkPath, 'PK fake apk');
+    const res = await api().get('/download/android');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/vnd.android.package-archive');
+    expect(res.headers['content-disposition']).toMatch(/attachment; filename="RideTrack.apk"/);
+    expect(res.headers['cache-control']).toBe('no-cache');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('answers 404 when no APK has been published', async () => {
+    env.apkPath = path.join(os.tmpdir(), 'rt-no-such-file.apk');
+    const res = await api().get('/download/android');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('APK_NOT_FOUND');
+  });
+
+  it('redirects to APK_URL when the build is hosted elsewhere', async () => {
+    env.apkUrl = 'https://example.com/ridetrack.apk';
+    const res = await api().get('/download/android');
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(env.apkUrl);
+  });
+
+  it('serves a QR code and a page that point at the stable download URL', async () => {
+    const svg = await api().get('/download/android/qr.svg');
+    expect(svg.status).toBe(200);
+    expect(svg.headers['content-type']).toMatch(/image\/svg\+xml/);
+    const png = await api().get('/download/android/qr.png');
+    expect(png.headers['content-type']).toBe('image/png');
+    const page = await api().get('/download');
+    expect(page.text).toContain(`${env.publicUrl}/download/android`);
   });
 });
 

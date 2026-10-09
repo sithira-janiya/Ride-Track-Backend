@@ -235,13 +235,25 @@ npm run simulate
 
 Drives the seeded vehicles along their routes so you can watch live positions, ETAs and delay alerts without real hardware.
 
+### 📲 Android app download (QR code)
+
+The API serves the Android app so anyone can install it by scanning one QR code:
+
+| URL | What it does |
+| --- | --- |
+| `/download` | Page with the QR code and a download button, for showing or printing |
+| `/download/android` | Downloads the APK straight away (`Content-Disposition: attachment`) |
+| `/download/android/qr.png`, `/download/android/qr.svg` | The QR code on its own |
+
+The QR code always encodes `PUBLIC_URL/download/android`, so it stays the same when you ship a new build: copy the new APK over `downloads/ridetrack.apk` (or point `APK_URL` at it) and printed codes keep working. It only changes if `PUBLIC_URL` changes, so for a code that works on any network, deploy the API and use its public domain rather than a LAN IP. On a phone, `localhost` is the phone itself, so locally set `PUBLIC_URL` to your computer's LAN IP (e.g. `http://192.168.1.20:3000`).
+
 ## ⚙️ Configuration
 
 Copy `.env.example` to `.env`. Key variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `PORT`, `PUBLIC_URL` | Listen port and the public URL used to build payment links |
+| `PORT`, `PUBLIC_URL` | Listen port and the public URL used to build payment and app download links |
 | `CORS_ORIGIN` | `*` or a comma-separated list of allowed origins |
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSL` | MySQL connection |
 | `JWT_ACCESS_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL_DAYS` | Token signing and lifetimes |
@@ -251,6 +263,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `DEVICE_API_KEY` | Shared key GPS devices send as `x-device-key` |
 | `FCM_SERVICE_ACCOUNT` | Optional Firebase service-account JSON for push notifications |
 | `ENABLE_JOBS` | Toggle background jobs |
+| `APK_PATH`, `APK_URL` | Android APK served at `/download/android` (default `downloads/ridetrack.apk`), or a URL to redirect to instead |
 
 Use long random values for every secret in production. `DB_POOL_SIZE` (default 20) sets the MySQL connection pool size.
 

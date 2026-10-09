@@ -10,6 +10,7 @@ import { errorHandler, notFoundHandler } from './middleware/error.js';
 import adminUsersRouter from './modules/admin/routes.js';
 import alertsRouter from './modules/alerts/routes.js';
 import authRouter, { adminAuthRouter } from './modules/auth/routes.js';
+import downloadsRouter from './modules/downloads/routes.js';
 import { opsRouter, reportsRouter } from './modules/ops/routes.js';
 import paymentsRouter from './modules/payments/routes.js';
 import { routesRouter, stopsRouter, tripsRouter } from './modules/routes/routes.js';
@@ -48,6 +49,8 @@ export function createApp() {
       res.status(503).json({ status: 'database unavailable' });
     }
   });
+
+  app.use('/download', downloadsRouter);
 
   const v1 = express.Router();
   v1.use('/auth', authRouter);

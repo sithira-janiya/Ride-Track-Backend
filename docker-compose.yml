@@ -32,7 +32,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      PUBLIC_URL: http://localhost:3000
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000} # your LAN IP so phones can open payment and download links
       DB_HOST: db
       DB_PORT: 3306
       DB_USER: ridetrack
@@ -46,6 +46,8 @@ services:
       DEVICE_API_KEY: dev-only-device-key-change-me
     ports:
       - "3000:3000"
+    volumes:
+      - ./downloads:/app/downloads:ro # APK served at /download/android
 
 volumes:
   dbdata:
