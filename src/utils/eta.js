@@ -12,9 +12,18 @@ export function cumulativeMeters(stops) {
   return out;
 }
 
-/** Timetable ETA at stop `idx` for a trip that left the origin at `startTime` (a Date). */
-export function scheduledEta(startTime, cumMeters, idx, mode) {
-  return new Date(startTime.getTime() + (cumMeters[idx] / SPEED_MPS[mode]) * 1000);
+/**
+ * Timetabled running time from the first stop to each stop, in seconds. Uses the route's own times
+ * (`secondsFromOrigin`, from the GTFS feed) when every stop has one, otherwise distance at the average speed.
+ */
+export function stopOffsets(stops, mode) {
+  if (stops.length && stops.every((s) => s.secondsFromOrigin != null)) return stops.map((s) => Number(s.secondsFromOrigin));
+  return cumulativeMeters(stops).map((m) => m / SPEED_MPS[mode]);
+}
+
+/** Timetable ETA at stop `idx` for a trip that left the origin at `startTime` (a Date). `offsets` from stopOffsets. */
+export function scheduledEta(startTime, offsets, idx) {
+  return new Date(startTime.getTime() + offsets[idx] * 1000);
 }
 
 /**
@@ -41,12 +50,18 @@ export function nextStopIndex(pos, stops) {
 
 /**
  * Live ETA at `targetIdx` from a vehicle position. Returns null when the vehicle has already passed that stop.
- * `now` is a Date. Distance is the straight line to the next stop, then along the route.
+ * `now` is a Date. The part of the current stop-to-stop leg still to go takes its share of that leg's timetabled
+ * time, then the timetable runs on from the next stop.
  */
-export function liveEta(pos, stops, cumMeters, targetIdx, mode, now = new Date()) {
+export function liveEta(pos, stops, offsets, targetIdx, mode, now = new Date()) {
   const next = nextStopIndex(pos, stops);
   if (targetIdx < next) return null;
   const toNext = haversineMeters(pos.lat, pos.lng, stops[next].latitude, stops[next].longitude);
-  const meters = toNext + (cumMeters[targetIdx] - cumMeters[next]);
-  return new Date(now.getTime() + (meters / SPEED_MPS[mode]) * 1000);
+  let toNextSec = toNext / SPEED_MPS[mode];
+  if (next > 0) {
+    const gap = haversineMeters(stops[next - 1].latitude, stops[next - 1].longitude, stops[next].latitude, stops[next].longitude);
+    const leg = offsets[next] - offsets[next - 1];
+    if (gap > 0) toNextSec = leg * Math.min(1, toNext / gap);
+  }
+  return new Date(now.getTime() + (toNextSec + offsets[targetIdx] - offsets[next]) * 1000);
 }

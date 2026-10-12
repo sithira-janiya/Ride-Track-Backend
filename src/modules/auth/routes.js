@@ -6,7 +6,7 @@ import { env } from '../../config/env.js';
 import { validate } from '../../middleware/validate.js';
 import { send, wrap } from '../../utils/async.js';
 import { EMAIL, NAME, PASSWORD, PHONE } from './schemas.js';
-import { adminLogin, login, logout, refresh, register } from './service.js';
+import { adminLogin, forgotPassword, googleLogin, login, logout, refresh, register, resetPassword } from './service.js';
 
 // brute-force protection on the credential endpoints (NFR3)
 const credentialLimit = (limit) =>
@@ -19,6 +19,10 @@ const credentialLimit = (limit) =>
   });
 
 const REFRESH_BODY = z.object({ refreshToken: z.string().min(20).max(200) });
+const IDENTIFIER = z.string().trim().min(1).max(150);
+
+// emails are stored lower-case; phones have separators removed
+const normalizeIdentifier = (raw) => (raw.includes('@') ? raw.toLowerCase() : raw.replace(/[\s-]/g, ''));
 
 const router = Router();
 router.use(credentialLimit(50));
@@ -35,13 +39,31 @@ router.post(
 
 router.post(
   '/login',
-  validate({ body: z.object({ identifier: z.string().trim().min(1).max(150), password: z.string().min(1).max(128) }) }),
+  validate({ body: z.object({ identifier: IDENTIFIER, password: z.string().min(1).max(128) }) }),
+  wrap(async (req, res) => send(res, await login({ identifier: normalizeIdentifier(req.valid.body.identifier), password: req.valid.body.password }))),
+);
+
+// same response whether or not the account exists
+router.post(
+  '/forgot-password',
+  validate({ body: z.object({ identifier: IDENTIFIER }) }),
   wrap(async (req, res) => {
-    // emails are stored lower-case; phones have separators removed
-    const raw = req.valid.body.identifier;
-    const identifier = raw.includes('@') ? raw.toLowerCase() : raw.replace(/[\s-]/g, '');
-    send(res, await login({ identifier, password: req.valid.body.password }));
+    await forgotPassword(normalizeIdentifier(req.valid.body.identifier));
+    send(res, { message: 'If an account matches, a reset code is on its way.' }, 202);
   }),
+);
+
+router.post(
+  '/reset-password',
+  validate({ body: z.object({ identifier: IDENTIFIER, code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code.'), password: PASSWORD }) }),
+  wrap(async (req, res) => send(res, await resetPassword({ ...req.valid.body, identifier: normalizeIdentifier(req.valid.body.identifier) }))),
+);
+
+// one tap sign-in: the app sends the ID token it got from Google; new accounts become passengers
+router.post(
+  '/google',
+  validate({ body: z.object({ idToken: z.string().min(20).max(4096) }) }),
+  wrap(async (req, res) => send(res, await googleLogin(req.valid.body.idToken))),
 );
 
 router.post(

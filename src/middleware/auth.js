@@ -27,18 +27,23 @@ export const requireRole =
     roles.includes(req.user?.role) ? next() : next(forbidden('Your account type cannot do this.'));
 
 /**
- * Admin-only routes. Besides an admin access token, the account is re-read on every request,
+ * Routes for admins and the listed app roles. For an admin the account is also re-read on every request,
  * so a disabled admin loses access at once instead of when the token expires.
  */
-export const requireAdmin = [
+export const requireAdminOr = (...roles) => [
   requireAuth,
-  requireRole('ADMIN'),
+  requireRole('ADMIN', ...roles),
   wrap(async (req, _res, next) => {
-    const [row] = await query('SELECT role, is_active FROM users WHERE user_id = ?', [req.user.id]);
-    if (row?.role !== 'ADMIN' || !row.is_active) throw unauthorized('Please log in again.');
+    if (req.user.role === 'ADMIN') {
+      const [row] = await query('SELECT role, is_active FROM users WHERE user_id = ?', [req.user.id]);
+      if (row?.role !== 'ADMIN' || !row.is_active) throw unauthorized('Please log in again.');
+    }
     next();
   }),
 ];
+
+/** Admin-only routes. */
+export const requireAdmin = requireAdminOr();
 
 export function verifyAccessToken(token) {
   const payload = jwt.verify(token, env.jwtAccessSecret);
