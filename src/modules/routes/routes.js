@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
+import { REGION_CODES } from '../../config/regions.js';
 import { requireAuth, requireRole } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import { send, wrap } from '../../utils/async.js';
@@ -9,6 +10,7 @@ import { addRouteStop, arrivals, createRoute, createTrip, getRoute, nearbyStops,
 
 const id = z.coerce.number().int().positive();
 const mode = z.enum(['BUS', 'TRAIN']);
+const region = z.enum(REGION_CODES);
 
 export const routesRouter = Router();
 
@@ -18,6 +20,7 @@ routesRouter.get(
     query: z.object({
       q: z.string().trim().max(100).optional(),
       mode: mode.optional(),
+      region: region.optional(),
       page: z.coerce.number().int().min(1).default(1),
       limit: z.coerce.number().int().min(1).max(100).default(50),
     }),
@@ -31,6 +34,7 @@ routesRouter.post(
   requireRole('AUTHORITY'),
   validate({
     body: z.object({
+      region: region.optional(),
       routeNo: z.string().trim().min(1).max(20),
       name: z.string().trim().min(2).max(150),
       mode,
