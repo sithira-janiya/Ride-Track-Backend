@@ -2,6 +2,14 @@
 -- Based on docs/06-database-mysql.md in the RideTrack Development repo, plus:
 --   users.notifications_enabled   (PATCH /users/me notification preference)
 --   refresh_tokens                (rotating refresh tokens, stored hashed)
+--   password_resets               (one-time forgot-password codes, stored hashed)
+--   routes.region                 (SRI_LANKA or DUBAI: the timetable's time zone and the fare currency)
+--   stops.fare_zone               (Dubai RTA fare zone: zone fares count the zones a trip touches)
+--   route_stops.seconds_from_origin (timetabled running time from the first stop)
+--   route_departures              (the timetable: departures from the first stop by day of the week)
+--   idx_trip_start, idx_ticket_status_issued, idx_payment_status_paid, idx_loc_time
+--                                 (the per-minute jobs, the admin overview and the 90-day GPS purge)
+-- db/schema.mssql.sql is the same schema for SQL Server; change both together.
 -- Applied by `npm run migrate`. Safe to run more than once.
 
 CREATE TABLE IF NOT EXISTS users (
@@ -30,15 +38,28 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS password_resets (
+  reset_id    INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id     INT UNSIGNED NOT NULL,
+  code_hash   CHAR(64) NOT NULL,
+  expires_at  DATETIME NOT NULL,
+  attempts    TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  used        BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_reset_user (user_id, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS routes (
   route_id     INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  region       VARCHAR(20)  NOT NULL DEFAULT 'SRI_LANKA',
   route_no     VARCHAR(20)  NOT NULL,
   name         VARCHAR(150) NOT NULL,
   mode         ENUM('BUS','TRAIN') NOT NULL,
   origin       VARCHAR(100) NOT NULL,
   destination  VARCHAR(100) NOT NULL,
   is_active    BOOLEAN NOT NULL DEFAULT TRUE,
-  UNIQUE KEY uq_route (mode, route_no)
+  UNIQUE KEY uq_route_dir (region, mode, route_no, origin, destination)
 );
 
 CREATE TABLE IF NOT EXISTS stops (
@@ -46,6 +67,7 @@ CREATE TABLE IF NOT EXISTS stops (
   name       VARCHAR(120) NOT NULL,
   latitude   DECIMAL(9,6) NOT NULL,
   longitude  DECIMAL(9,6) NOT NULL,
+  fare_zone  VARCHAR(10)  NULL,
   INDEX idx_stops_geo (latitude, longitude)
 );
 
@@ -81,10 +103,22 @@ CREATE TABLE IF NOT EXISTS route_stops (
   stop_id          INT UNSIGNED NOT NULL,
   stop_sequence    SMALLINT UNSIGNED NOT NULL,
   fare_from_origin DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+  seconds_from_origin INT UNSIGNED NULL,
   PRIMARY KEY (route_id, stop_id),
   UNIQUE KEY uq_route_seq (route_id, stop_sequence),
   FOREIGN KEY (route_id) REFERENCES routes(route_id) ON DELETE CASCADE,
   FOREIGN KEY (stop_id)  REFERENCES stops(stop_id)
+);
+
+-- service_days: Mon..Sun, '1' where it runs ('1111000' = Monday to Thursday).
+-- depart_minute: minutes after midnight of the service day, in the route's region (past 1440 = after midnight).
+CREATE TABLE IF NOT EXISTS route_departures (
+  departure_id   INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  route_id       INT UNSIGNED NOT NULL,
+  service_days   CHAR(7) NOT NULL,
+  depart_minute  SMALLINT UNSIGNED NOT NULL,
+  UNIQUE KEY uq_departure (route_id, service_days, depart_minute),
+  FOREIGN KEY (route_id) REFERENCES routes(route_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS trips (
@@ -95,6 +129,7 @@ CREATE TABLE IF NOT EXISTS trips (
   end_time    DATETIME NULL,
   status      ENUM('SCHEDULED','ONGOING','DELAYED','CANCELLED','COMPLETED') NOT NULL DEFAULT 'SCHEDULED',
   INDEX idx_trip_route_time (route_id, start_time),
+  INDEX idx_trip_start (start_time),
   INDEX idx_trip_status (status),
   FOREIGN KEY (route_id)   REFERENCES routes(route_id),
   FOREIGN KEY (vehicle_id) REFERENCES vehicles(vehicle_id)
@@ -112,6 +147,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   issued_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_ticket_user (user_id, issued_at),
   INDEX idx_ticket_trip (trip_id),
+  INDEX idx_ticket_status_issued (status, issued_at),
   FOREIGN KEY (user_id)        REFERENCES users(user_id),
   FOREIGN KEY (trip_id)        REFERENCES trips(trip_id),
   FOREIGN KEY (board_stop_id)  REFERENCES stops(stop_id),
@@ -126,6 +162,7 @@ CREATE TABLE IF NOT EXISTS payments (
   gateway_ref  VARCHAR(100) NULL,
   status       ENUM('PENDING','PAID','FAILED','REFUNDED') NOT NULL DEFAULT 'PENDING',
   paid_at      TIMESTAMP NULL,
+  INDEX idx_payment_status_paid (status, paid_at),
   FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
 );
 
@@ -148,6 +185,7 @@ CREATE TABLE IF NOT EXISTS location_log (
   eta          DATETIME NULL,
   recorded_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_loc_vehicle_time (vehicle_id, recorded_at),
+  INDEX idx_loc_time (recorded_at),
   FOREIGN KEY (vehicle_id) REFERENCES vehicles(vehicle_id)
 );
 

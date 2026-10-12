@@ -1,21 +1,22 @@
-import { query } from '../../config/db.js';
+import { limit, query } from '../../config/db.js';
 import { badRequest } from '../../utils/errors.js';
 import { describeMany } from '../vehicles/service.js';
 
 /** Live picture for the authority dashboard (FR9): every reporting vehicle, recent delays and an occupancy summary. */
 export async function dashboard() {
   const rows = await query(
-    `SELECT v.*, r.route_no, r.mode FROM vehicles v JOIN routes r ON r.route_id = v.route_id
-      WHERE v.is_active = TRUE ORDER BY r.route_no, v.vehicle_id`,
+    `SELECT v.*, r.route_no, r.mode, r.region FROM vehicles v JOIN routes r ON r.route_id = v.route_id
+      WHERE v.is_active = 1 ORDER BY r.region DESC, r.route_no, v.vehicle_id`,
   );
   const described = await describeMany(rows);
   const vehicles = rows
-    .map((v, i) => described[i] && { ...described[i], routeId: v.route_id, routeNo: v.route_no, mode: v.mode })
+    .map((v, i) => described[i] && { ...described[i], routeId: v.route_id, routeNo: v.route_no, mode: v.mode, region: v.region })
     .filter(Boolean);
 
   const alerts = await query(
-    `SELECT * FROM delay_alerts WHERE type IN ('DELAY','CANCELLATION') AND created_at > UTC_TIMESTAMP() - INTERVAL 12 HOUR
-      ORDER BY created_at DESC, alert_id DESC LIMIT 50`,
+    `SELECT * FROM delay_alerts WHERE type IN ('DELAY','CANCELLATION') AND created_at > ?
+      ORDER BY created_at DESC, alert_id DESC ${limit(50)}`,
+    [new Date(Date.now() - 12 * 3600000)],
   );
   const activeDelays = alerts.map((a) => ({
     alertId: a.alert_id,
@@ -55,11 +56,11 @@ export async function generateReport(officerId, { type, routeId, from, to }) {
     const rows = await query(
       `SELECT r.route_no, r.name,
               COUNT(DISTINCT tr.trip_id) AS trips,
-              SUM(tr.status NOT IN ('DELAYED','CANCELLED')) AS on_time_trips,
+              SUM(CASE WHEN tr.status NOT IN ('DELAYED','CANCELLED') THEN 1 ELSE 0 END) AS on_time_trips,
               COUNT(DISTINCT CASE WHEN t.status IN ('ACTIVE','USED') THEN t.ticket_id END) AS tickets
          FROM routes r JOIN trips tr ON tr.route_id = r.route_id AND tr.start_time BETWEEN ? AND ? ${routeFilter}
          LEFT JOIN tickets t ON t.trip_id = tr.trip_id
-        GROUP BY r.route_id ORDER BY r.route_no`,
+        GROUP BY r.route_id, r.route_no, r.name ORDER BY r.route_no`,
       [start, end, ...rp],
     );
     report = {
@@ -74,13 +75,13 @@ export async function generateReport(officerId, { type, routeId, from, to }) {
     };
   } else if (type === 'DELAYS') {
     const rows = await query(
-      `SELECT DATE(a.created_at) AS day, COUNT(*) AS n, ROUND(AVG(a.delay_minutes)) AS avg_min
+      `SELECT CAST(a.created_at AS DATE) AS alert_day, COUNT(*) AS n, AVG(1.0 * a.delay_minutes) AS avg_min
          FROM delay_alerts a JOIN trips tr ON tr.trip_id = a.trip_id
         WHERE a.type = 'DELAY' AND a.created_at BETWEEN ? AND ? ${routeFilter}
-        GROUP BY DATE(a.created_at)`,
+        GROUP BY CAST(a.created_at AS DATE)`,
       [start, end, ...rp],
     );
-    const byDay = new Map(rows.map((r) => [isoDay(new Date(r.day)), r]));
+    const byDay = new Map(rows.map((r) => [isoDay(new Date(r.alert_day)), r]));
     const days = Math.round((new Date(`${to}T00:00:00Z`) - new Date(`${from}T00:00:00Z`)) / DAY_MS) + 1;
     report = {
       title: 'Delays by day',
@@ -90,15 +91,15 @@ export async function generateReport(officerId, { type, routeId, from, to }) {
       rows: Array.from({ length: days }, (_, i) => {
         const d = new Date(start.getTime() + i * DAY_MS);
         const hit = byDay.get(isoDay(d));
-        return { label: d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric', timeZone: 'UTC' }), values: [hit ? Number(hit.n) : 0, hit ? Number(hit.avg_min ?? 0) : 0] };
+        return { label: d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric', timeZone: 'UTC' }), values: [hit ? Number(hit.n) : 0, hit ? Math.round(Number(hit.avg_min ?? 0)) : 0] };
       }),
     };
   } else {
     const rows = await query(
-      `SELECT r.route_no, r.name, AVG(o.passenger_count / v.capacity) AS avg_ratio, MAX(o.passenger_count / v.capacity) AS peak_ratio
+      `SELECT r.route_no, r.name, AVG(1.0 * o.passenger_count / v.capacity) AS avg_ratio, MAX(1.0 * o.passenger_count / v.capacity) AS peak_ratio
          FROM occupancy_log o JOIN vehicles v ON v.vehicle_id = o.vehicle_id JOIN routes r ON r.route_id = v.route_id
         WHERE o.recorded_at BETWEEN ? AND ? ${routeId ? 'AND r.route_id = ?' : ''}
-        GROUP BY r.route_id ORDER BY r.route_no`,
+        GROUP BY r.route_id, r.route_no, r.name ORDER BY r.route_no`,
       [start, end, ...rp],
     );
     report = {
@@ -106,7 +107,7 @@ export async function generateReport(officerId, { type, routeId, from, to }) {
       columns: ['Average %', 'Peak %'],
       chartColumn: 0,
       unit: '%',
-      rows: rows.map((r) => ({ label: `${r.route_no} ${r.name}`, values: [Math.round(r.avg_ratio * 100), Math.min(100, Math.round(r.peak_ratio * 100))] })),
+      rows: rows.map((r) => ({ label: `${r.route_no} ${r.name}`, values: [Math.round(Number(r.avg_ratio) * 100), Math.min(100, Math.round(Number(r.peak_ratio) * 100))] })),
     };
   }
 

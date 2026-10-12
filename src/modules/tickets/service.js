@@ -1,11 +1,12 @@
-import { query, withTransaction } from '../../config/db.js';
+import { limit as limitRows, query, withTransaction } from '../../config/db.js';
+import { fareBetween, regionInfo } from '../../config/regions.js';
 import { badRequest, conflict, notFound } from '../../utils/errors.js';
 import { getRouteStops } from '../routes/stops.js';
 import { createPaymentSession } from '../payments/gateway.js';
 import { signQrToken } from './qr.js';
 
 const SELECT = `
-  SELECT t.*, p.status AS payment_status, r.route_no, bs.name AS board_name, als.name AS alight_name
+  SELECT t.*, p.status AS payment_status, r.route_no, r.region, bs.name AS board_name, als.name AS alight_name
     FROM tickets t
     JOIN trips tr ON tr.trip_id = t.trip_id
     JOIN routes r ON r.route_id = tr.route_id
@@ -20,6 +21,8 @@ export const toTicket = (r) => ({
   boardStopId: r.board_stop_id,
   alightStopId: r.alight_stop_id,
   fare: r.fare,
+  currency: regionInfo(r.region).currency,
+  timeZone: regionInfo(r.region).timeZone,
   status: r.status,
   qrToken: r.status === 'ACTIVE' ? r.qr_code : null,
   issuedAt: new Date(r.issued_at).toISOString(),
@@ -29,9 +32,9 @@ export const toTicket = (r) => ({
   alightStopName: r.alight_name,
 });
 
-/** Creates a PENDING ticket (fare from the route's stop fares) and a payment session to pay it. */
+/** Creates a PENDING ticket (fare from the route's stop fares, or its zones in Dubai) and a payment session to pay it. */
 export async function createTicket(userId, { tripId, boardStopId, alightStopId }) {
-  const [trip] = await query('SELECT route_id, status FROM trips WHERE trip_id = ?', [tripId]);
+  const [trip] = await query('SELECT tr.route_id, tr.status, r.region FROM trips tr JOIN routes r ON r.route_id = tr.route_id WHERE tr.trip_id = ?', [tripId]);
   if (!trip) throw notFound('Trip not found.');
   if (!['SCHEDULED', 'ONGOING', 'DELAYED'].includes(trip.status)) throw conflict('This trip is no longer running.', 'TRIP_NOT_AVAILABLE');
 
@@ -40,7 +43,7 @@ export async function createTicket(userId, { tripId, boardStopId, alightStopId }
   const alight = stops.find((s) => s.stopId === alightStopId);
   if (!board || !alight) throw badRequest('Both stops must be on this trip’s route.');
   if (alight.stopSequence <= board.stopSequence) throw badRequest('Choose a drop-off stop after your boarding stop.');
-  const fare = Math.round((alight.fareFromOrigin - board.fareFromOrigin) * 100) / 100;
+  const fare = fareBetween(trip.region, stops, board, alight);
 
   const ticketId = await withTransaction(async (conn) => {
     const [t] = await conn.query('INSERT INTO tickets (user_id, trip_id, board_stop_id, alight_stop_id, fare) VALUES (?, ?, ?, ?, ?)', [
@@ -62,9 +65,7 @@ export async function listTickets(userId, { status, page, limit }) {
   const where = ['t.user_id = ?'];
   const params = [userId];
   if (status) (where.push('t.status = ?'), params.push(status));
-  const rows = await query(`${SELECT} WHERE ${where.join(' AND ')} ORDER BY t.issued_at DESC, t.ticket_id DESC LIMIT ? OFFSET ?`, [
-    ...params, limit, (page - 1) * limit,
-  ]);
+  const rows = await query(`${SELECT} WHERE ${where.join(' AND ')} ORDER BY t.issued_at DESC, t.ticket_id DESC ${limitRows(limit, (page - 1) * limit)}`, params);
   return rows.map(toTicket);
 }
 

@@ -14,7 +14,7 @@ export const toUser = (r) => ({
 });
 
 export async function getUser(userId) {
-  const [row] = await query('SELECT * FROM users WHERE user_id = ? AND is_active = TRUE', [userId]);
+  const [row] = await query('SELECT * FROM users WHERE user_id = ? AND is_active = 1', [userId]);
   if (!row) throw notFound('Account not found.');
   return toUser(row);
 }
