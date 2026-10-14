@@ -89,10 +89,18 @@ function h(tag, attrs = {}, ...children) {
 }
 
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—');
-// timeZone: the route's, so Dubai and Sri Lanka trips each show their own local time
+// timeZone: the route's, so each region's trips show their own local time
 const fmtClock = (iso, timeZone) => (iso ? new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', timeZone }) : '—');
 const fmtMoney = (n, currency = 'LKR') => `${currency} ${Number(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const REGION = { SRI_LANKA: 'Sri Lanka', DUBAI: 'Dubai' };
+// region code -> name, filled from GET /regions when the panel opens
+let REGION = { SRI_LANKA: 'Sri Lanka' };
+async function loadRegions() {
+  try {
+    REGION = Object.fromEntries((await api('/regions')).map((r) => [r.region, r.name]));
+  } catch { /* keep what we have; region codes still show */ }
+}
+// what a stop's fare_from_origin means under each fare model (see src/config/regions.js)
+const STOP_FARE_LABEL = { BOARDING: 'Fare when boarding here', DISTANCE: 'Fare from origin (estimated by distance)', ZONE: 'Zone fare from origin' };
 const today = () => new Date().toISOString().slice(0, 10);
 const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 
@@ -570,7 +578,7 @@ async function stopsDialog(r) {
     { name: 'latitude', label: 'Latitude', type: 'number', step: 'any', min: -90, max: 90, required: true },
     { name: 'longitude', label: 'Longitude', type: 'number', step: 'any', min: -180, max: 180, required: true },
     { name: 'stopSequence', label: 'Sequence', type: 'number', min: 1, required: true, value: next },
-    { name: 'fareFromOrigin', label: `Fare from origin (${r.currency ?? 'LKR'})`, type: 'number', min: 0, step: '0.01', required: true },
+    { name: 'fareFromOrigin', label: `${STOP_FARE_LABEL[detail.fareModel] ?? 'Fare from origin'} (${detail.currency ?? 'LKR'})`, type: 'number', min: 0, step: '0.01', required: true },
   ], async ({ existing: _ignored, ...v }) => {
     await api(`/routes/${r.routeId}/stops`, { method: 'POST', body: v });
     toast('Stop added.');
@@ -678,7 +686,7 @@ function showShell() {
   $('#shell').hidden = false;
   $('#me-name').textContent = session.user?.name ?? '';
   document.querySelectorAll('#nav a').forEach((a) => (a.hidden = !visiblePages().includes(a.getAttribute('href').slice(1))));
-  render();
+  loadRegions().then(render);
 }
 
 $('#login-form').addEventListener('submit', async (e) => {

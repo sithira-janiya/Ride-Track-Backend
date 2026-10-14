@@ -15,7 +15,7 @@ import alertsRouter from './modules/alerts/routes.js';
 import authRouter, { adminAuthRouter } from './modules/auth/routes.js';
 import { opsRouter, reportsRouter } from './modules/ops/routes.js';
 import paymentsRouter from './modules/payments/routes.js';
-import { routesRouter, stopsRouter, tripsRouter } from './modules/routes/routes.js';
+import { regionsRouter, routesRouter, stopsRouter, tripsRouter } from './modules/routes/routes.js';
 import { scansRouter, tripScansRouter } from './modules/scans/routes.js';
 import ticketsRouter from './modules/tickets/routes.js';
 import usersRouter from './modules/users/routes.js';
@@ -62,6 +62,7 @@ export function createApp() {
   const v1 = express.Router();
   v1.use('/auth', authRouter);
   v1.use('/users', usersRouter);
+  v1.use('/regions', regionsRouter);
   v1.use('/routes', routesRouter);
   v1.use('/stops', stopsRouter);
   v1.use('/vehicles', vehiclesRouter);

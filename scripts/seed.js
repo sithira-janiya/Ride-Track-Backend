@@ -1,7 +1,10 @@
-// Loads demo data for two regions, one user per role, and trips from the timetables around "now":
+// Loads demo data for every region, one user per role, and trips from the timetables around "now":
 //   Sri Lanka: 3 demo routes (Colombo buses and the Main Line to Kandy), 4 vehicles and a demo timetable.
-//   Dubai: real RTA routes, stops, fare zones, running times and timetables (Metro Red and Green lines, the tram and
-//          four bus routes) from db/data/dubai-rta.json, which scripts/import-dubai-gtfs.js builds from RTA's GTFS feed.
+//   Dubai, Hong Kong, Kuala Lumpur: real routes, stops, running times and timetables from the city's open GTFS feed,
+//          in db/data/*.json (built by scripts/import-dubai-gtfs.js and scripts/import-gtfs.js).
+//          Dubai: Metro Red and Green lines, the tram and four bus routes, with RTA fare zones.
+//          Hong Kong: the tram, the Peak Tram and four bus routes (A21 to the airport), with their section fares.
+//          Kuala Lumpur: every Rapid KL rail line (LRT, MRT, monorail) and the Sunway BRT; fares are estimated.
 //   npm run seed          adds any region that is missing and refreshes the trips
 //   npm run seed:reset    wipes every table first
 import { readFileSync } from 'node:fs';
@@ -47,7 +50,13 @@ const VEHICLES = [
   [301, 'NB-9001', 'BUS', 52, 3],
 ];
 
-const DUBAI = JSON.parse(readFileSync(new URL('../db/data/dubai-rta.json', import.meta.url), 'utf8'));
+const readData = (file) => JSON.parse(readFileSync(new URL(`../db/data/${file}`, import.meta.url), 'utf8'));
+/** Regions loaded from GTFS-derived data files, in the order they are seeded. */
+const GTFS_REGIONS = [
+  ['DUBAI', 'dubai-rta.json'],
+  ['HONG_KONG', 'hong-kong.json'],
+  ['KUALA_LUMPUR', 'kuala-lumpur.json'],
+];
 
 export async function seed({ reset = false } = {}) {
   if (env.isProd && process.env.ALLOW_DEMO_SEED !== 'true') {
@@ -57,7 +66,7 @@ export async function seed({ reset = false } = {}) {
 
   const regionMissing = async (region) => (await query('SELECT COUNT(*) AS n FROM routes WHERE region = ?', [region]))[0].n === 0;
   if (await regionMissing('SRI_LANKA')) await seedSriLanka();
-  if (await regionMissing('DUBAI')) await seedDubai();
+  for (const [region, file] of GTFS_REGIONS) if (await regionMissing(region)) await seedGtfsRegion(region, readData(file));
   clearStopsCache();
   await addDemoTimetables();
   await seedTrips();
@@ -123,22 +132,35 @@ async function seedSriLanka() {
   await query("INSERT INTO authority_officers (user_id, department, employee_no) VALUES (?, 'Transport Authority', 'AU-001')", [ids[2]]);
 }
 
-/** Dubai RTA data: real stops, stop order, fare zones, running times and departure times. Vehicles are named per route. */
-async function seedDubai() {
+/**
+ * A region built from a city's GTFS feed: real stops, stop order, running times and departure times, plus fare zones
+ * or boarding fares where the feed has them. Vehicles are named per route.
+ */
+async function seedGtfsRegion(region, data) {
   const stopIds = [];
-  for (const s of DUBAI.stops) {
-    stopIds.push((await query('INSERT INTO stops (name, latitude, longitude, fare_zone) VALUES (?, ?, ?, ?)', [s.name, s.lat, s.lng, s.zone])).insertId);
+  for (const s of data.stops) {
+    stopIds.push((await query('INSERT INTO stops (name, latitude, longitude, fare_zone) VALUES (?, ?, ?, ?)', [s.name, s.lat, s.lng, s.zone ?? null])).insertId);
   }
-  for (const r of DUBAI.routes) {
+  for (const r of data.routes) {
     const routeId = (await query('INSERT INTO routes (region, route_no, name, mode, origin, destination) VALUES (?, ?, ?, ?, ?, ?)', [
-      'DUBAI', r.routeNo, r.name, r.mode, r.origin, r.destination,
+      region, r.routeNo, r.name, r.mode, r.origin, r.destination,
     ])).insertId;
-    const stops = r.stops.map(([i, seconds], k) => ({ stopId: stopIds[i], stopSequence: k + 1, fareZone: DUBAI.stops[i].zone, seconds }));
-    // fare_from_origin is what the app lists next to each stop: the zone fare from the first stop
+    const stops = r.stops.map(([i, seconds, fare], k) => ({
+      stopId: stopIds[i],
+      stopSequence: k + 1,
+      fareZone: data.stops[i].zone ?? null,
+      latitude: data.stops[i].lat,
+      longitude: data.stops[i].lng,
+      seconds,
+      fare,
+    }));
+    // fare_from_origin is what the app lists next to each stop: the feed's boarding fare (Hong Kong),
+    // otherwise the region's fare from the first stop (Dubai zones, Kuala Lumpur distance)
+    const fareAt = (s, k) => s.fare ?? (k === 0 ? 0 : fareBetween(region, stops, stops[0], s));
     await insertMany(
       'route_stops',
       ['route_id', 'stop_id', 'stop_sequence', 'fare_from_origin', 'seconds_from_origin'],
-      stops.map((s, k) => [routeId, s.stopId, s.stopSequence, k === 0 ? 0 : fareBetween('DUBAI', stops, stops[0], s), s.seconds]),
+      stops.map((s, k) => [routeId, s.stopId, s.stopSequence, fareAt(s, k), s.seconds]),
     );
     await insertMany(
       'route_departures',
@@ -187,6 +209,6 @@ async function seedTrips() {
 
 if (process.argv[1]?.endsWith('seed.js')) {
   await seed({ reset: process.argv.includes('--reset') });
-  console.log(`Seed complete (Sri Lanka and Dubai). Demo accounts: passenger@ridetrack.test, staff@ridetrack.test, officer@ridetrack.test${env.isProd ? '' : ', admin@ridetrack.test'}`);
+  console.log(`Seed complete (Sri Lanka, Dubai, Hong Kong and Kuala Lumpur). Demo accounts: passenger@ridetrack.test, staff@ridetrack.test, officer@ridetrack.test${env.isProd ? '' : ', admin@ridetrack.test'}`);
   await closePool();
 }

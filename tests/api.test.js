@@ -447,6 +447,51 @@ describe('Dubai (RTA timetable data)', () => {
   });
 });
 
+describe('more regions (Hong Kong and Kuala Lumpur GTFS data)', () => {
+  const futureTrip = async (routeId) =>
+    (await query(`SELECT trip_id FROM trips WHERE route_id = ? AND status = 'SCHEDULED' ORDER BY start_time ${limit(1)}`, [routeId]))[0];
+  const book = (tripId, board, alight) =>
+    api().post('/api/v1/tickets').set(auth(passenger.token)).send({ tripId, boardStopId: board.stopId, alightStopId: alight.stopId });
+  const fareOf = async (res) => (await api().get(`/api/v1/tickets/${res.body.data.ticketId}`).set(auth(passenger.token))).body.data;
+
+  it('lists every region with its clock, currency and fare model', async () => {
+    const res = await api().get('/api/v1/regions');
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((r) => r.region)).toEqual(['SRI_LANKA', 'DUBAI', 'HONG_KONG', 'KUALA_LUMPUR']);
+    expect(res.body.data.find((r) => r.region === 'HONG_KONG')).toMatchObject({ timeZone: 'Asia/Hong_Kong', currency: 'HKD', fareModel: 'BOARDING' });
+    expect(res.body.data.find((r) => r.region === 'KUALA_LUMPUR')).toMatchObject({ timeZone: 'Asia/Kuala_Lumpur', currency: 'MYR', fareModel: 'DISTANCE' });
+  });
+
+  it('charges Hong Kong section fares by the stop you board at, in Hong Kong dollars', async () => {
+    const routes = (await api().get('/api/v1/routes?region=HONG_KONG')).body.data;
+    expect(routes.every((r) => r.timeZone === 'Asia/Hong_Kong' && r.currency === 'HKD' && r.fareModel === 'BOARDING')).toBe(true);
+    expect(routes.map((r) => r.routeNo)).toEqual(expect.arrayContaining(['Tram', 'Peak Tram', 'A21', '1A']));
+    const a21 = routes.find((r) => r.origin === 'Airport (Ground Transportation Centre)');
+    const { stops } = (await api().get(`/api/v1/routes/${a21.routeId}`)).body.data;
+    expect(stops[0].fareFromOrigin).toBe(34.6);
+    const later = stops.find((s) => s.fareFromOrigin < stops[0].fareFromOrigin); // the fare drops once past the Lantau section
+    const trip = await futureTrip(a21.routeId);
+    expect(await fareOf(await book(trip.trip_id, stops[0], stops[1]))).toMatchObject({ fare: 34.6, currency: 'HKD', timeZone: 'Asia/Hong_Kong' });
+    expect((await fareOf(await book(trip.trip_id, stops[0], stops.at(-1)))).fare).toBe(34.6);
+    expect((await fareOf(await book(trip.trip_id, later, stops.at(-1)))).fare).toBe(later.fareFromOrigin);
+  });
+
+  it('runs every Rapid KL rail line and estimates fares by distance, in ringgit', async () => {
+    const routes = (await api().get('/api/v1/routes?region=KUALA_LUMPUR&limit=100')).body.data;
+    expect(new Set(routes.map((r) => r.routeNo))).toEqual(new Set(['AGL', 'KJL', 'SPL', 'KGL', 'PYL', 'MRL', 'BRT', 'SAL']));
+    const kj = routes.find((r) => r.routeNo === 'KJL' && r.origin === 'Gombak');
+    expect(kj).toMatchObject({ mode: 'TRAIN', currency: 'MYR', fareModel: 'DISTANCE', distanceFare: { base: 1.2, perKm: 0.15, max: 6.4 } });
+    const { stops } = (await api().get(`/api/v1/routes/${kj.routeId}`)).body.data;
+    expect(stops).toHaveLength(37);
+    const trip = await futureTrip(kj.routeId);
+    const short = (await fareOf(await book(trip.trip_id, stops[0], stops[1]))).fare;
+    const long = (await fareOf(await book(trip.trip_id, stops[0], stops.at(-1)))).fare;
+    expect(short).toBeGreaterThanOrEqual(1.2);
+    expect(long).toBe(6.4); // capped
+    expect(short).toBeLessThan(long);
+  });
+});
+
 describe('live tracking', () => {
   const ping = (vehicleId, lat, lng, key = env.deviceApiKey) =>
     api().post(`/api/v1/vehicles/${vehicleId}/location`).set('x-device-key', key).send({ lat, lng });

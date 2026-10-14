@@ -3,11 +3,12 @@
 // (about 270 MB unzipped) is only needed to refresh the data.
 //   node scripts/import-dubai-gtfs.js <unzipped GTFS folder> [--out <file.json>]...
 // Feed: https://mobilitydatabase.org/feeds/mdb-3359 (mirror of the RTA dataset on Dubai Pulse, rta_gtfs-open).
-import { createReadStream, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createReadStream, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 
 import { haversineMeters } from '../src/utils/geo.js';
+import { DAYS, fleetNeeded, median, parseCsvLine, readTable as readGtfsTable, seconds } from './lib/gtfs.js';
 
 /** GTFS route_short_name -> how RideTrack shows it. Metro and tram are TRAIN; route_type 3 is BUS. */
 const PICK = {
@@ -21,9 +22,7 @@ const PICK = {
   X28: { capacity: 80 },
 };
 const RENAME = { 'EXPO Metro Station': 'Expo 2020 Metro Station' };
-const TURNAROUND_MIN = 5;
 const MERGE_M = 500; // platforms / bays of one station closer than this become one stop
-const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
 const args = process.argv.slice(2);
 const dir = args[0];
@@ -34,38 +33,7 @@ if (!dir) {
 }
 if (!outs.length) outs.push(new URL('../db/data/dubai-rta.json', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 
-function parseCsvLine(line) {
-  const out = [];
-  let cur = '';
-  let quoted = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (quoted) {
-      if (ch !== '"') cur += ch;
-      else if (line[i + 1] === '"') (cur += '"'), (i += 1);
-      else quoted = false;
-    } else if (ch === '"') quoted = true;
-    else if (ch === ',') out.push(cur), (cur = '');
-    else cur += ch;
-  }
-  out.push(cur);
-  return out;
-}
-
-function readTable(file) {
-  const lines = readFileSync(path.join(dir, file), 'utf8').replace(/^﻿/, '').split(/\r?\n/).filter(Boolean);
-  const head = parseCsvLine(lines[0]);
-  return lines.slice(1).map((l) => Object.fromEntries(parseCsvLine(l).map((v, i) => [head[i], v])));
-}
-
-const seconds = (hms) => {
-  const [h, m, s] = hms.split(':').map(Number);
-  return h * 3600 + m * 60 + s;
-};
-const median = (xs) => {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[s.length >> 1];
-};
+const readTable = (file) => readGtfsTable(dir, file);
 
 /**
  * "centrepoint Metro Station 1" -> "Centrepoint Metro Station", "Gold Souq Bus Station 12" -> "Gold Souq Bus Station".
@@ -147,17 +115,6 @@ for (const p of picked) {
     }
     p.order.push(i);
   }
-}
-
-/** Fewest vehicles that can run every departure of one service day, with a short turnaround between trips. */
-function fleetNeeded(startsMin, durationMin) {
-  const freeAt = [];
-  for (const s of [...startsMin].sort((a, b) => a - b)) {
-    const v = freeAt.findIndex((t) => t <= s);
-    if (v < 0) freeAt.push(s + durationMin + TURNAROUND_MIN);
-    else freeAt[v] = s + durationMin + TURNAROUND_MIN;
-  }
-  return freeAt.length;
 }
 
 const out = [];

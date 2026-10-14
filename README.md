@@ -29,10 +29,10 @@ Live tracking · QR ticketing · Payments · Delay alerts
 <!-- STATS:START -->
 <table>
   <tr>
-    <td align="center"><h2>48</h2>REST endpoints</td>
+    <td align="center"><h2>49</h2>REST endpoints</td>
     <td align="center"><h2>19</h2>DB tables</td>
     <td align="center"><h2>10</h2>API modules</td>
-    <td align="center"><h2>91</h2>automated tests</td>
+    <td align="center"><h2>96</h2>automated tests</td>
     <td align="center"><h2>5</h2>background jobs</td>
     <td align="center"><h2>13</h2>runtime deps</td>
   </tr>
@@ -59,7 +59,8 @@ GPS devices on vehicles authenticate separately with a shared device key.
 
 - 🔐 **JWT auth** with short-lived access tokens, rotating refresh tokens and role-based access control (`PASSENGER`, `STAFF`, `AUTHORITY`, `ADMIN`)
 - 🔑 **Separate admin sign-in** with a tighter rate limit, 12-hour sessions, 12+ character passwords and an account check on every admin request
-- 🌍 **Two regions**: Sri Lanka (demo routes, LKR) and **Dubai with real RTA data**: Metro Red and Green lines, the tram and four bus routes, with real stops, fare zones (AED 3 / 5 / 7.50), running times and timetables
+- 🌍 **Four regions**: Sri Lanka (demo routes, LKR) and real open timetable data for **Dubai** (Metro, tram and buses, RTA fare zones), **Hong Kong** (tram, Peak Tram and buses incl. airport route A21, real section fares) and **Kuala Lumpur** (every Rapid KL rail line and the Sunway BRT), each on its own clock and currency
+- 🧭 **GTFS importer**: `scripts/import-gtfs.js` turns a city's GTFS feed (trip-based or frequency-based) into a region, configured per city in `scripts/gtfs-cities.js`
 - 🕒 **Timetables**: departures per weekday in each region's own time zone, turned into trips by the seed and an hourly job
 - 📍 **Live tracking**: GPS ingestion, per-route Socket.IO rooms, live ETA vs. timetable
 - 🎫 **QR ticketing**: signed QR payloads, staff validation, manual-ID fallback, cancellation
@@ -251,11 +252,18 @@ The panel is plain HTML/JS served by the API itself (`src/admin/`), so there is 
 npm run simulate
 ```
 
-Drives the vehicles of every running trip along their routes so you can watch live positions, ETAs and delay alerts without real hardware. Vehicles keep to the timetabled time between stops. At peak the Dubai routes alone have about 100 vehicles on the road, so positions go out in parallel batches, and `location_log` grows by roughly one row per vehicle per tick while it runs (`SIM_INTERVAL_MS`, default 3000, slows it down).
+Drives the vehicles of every running trip along their routes so you can watch live positions, ETAs and delay alerts without real hardware. Vehicles keep to the timetabled time between stops. At peak the four regions have about 260 vehicles on the road, so positions go out in parallel batches, and `location_log` grows by roughly one row per vehicle per tick while it runs (`SIM_INTERVAL_MS`, default 3000, slows it down).
 
-### Regions and the Dubai data
+### Regions
 
-Every route has a `region` (`SRI_LANKA` or `DUBAI`, see `src/config/regions.js`). It sets the time zone the route's timetable runs on (`Asia/Colombo`, `Asia/Dubai`) and the currency of its fares (LKR, AED). Route and ticket responses carry `region`, `timeZone` and `currency`, so the app shows each route's times on its local clock.
+Every route has a `region` (see `src/config/regions.js`, or `GET /regions`). It sets the time zone the route's timetable runs on, the currency of its fares and how a fare is worked out (`fareModel`). Route and ticket responses carry `region`, `timeZone`, `currency` and `fareModel`, so the app shows each route's times on its local clock.
+
+| Region | Clock | Currency | Fare model | Routes |
+| --- | --- | --- | --- | --- |
+| `SRI_LANKA` | Asia/Colombo | LKR | `STOP_DIFFERENCE`: the difference of the stops' `fareFromOrigin` | 3 demo routes |
+| `DUBAI` | Asia/Dubai | AED | `ZONE`: by the number of fare zones touched (`zoneFares`) | 16 (RTA GTFS) |
+| `HONG_KONG` | Asia/Hong_Kong | HKD | `BOARDING`: the fare of the stop you board at, held in its `fareFromOrigin` | 12 (Transport Department GTFS) |
+| `KUALA_LUMPUR` | Asia/Kuala_Lumpur | MYR | `DISTANCE`: `distanceFare.base` + `perKm` along the route, capped at `max` (an estimate) | 16 (Prasarana GTFS) |
 
 - **Sri Lanka**: three demo routes (Colombo buses 138 and 177, the Main Line to Kandy). Fares are by stop. The timetable is a demo one (a vehicle every 1 to 3 hours, all day), made by the seed for any route without a timetable.
 - **Dubai**: real data from Dubai RTA's GTFS feed: Metro Red Line (both branches, to Expo 2020 and to Life Pharmacy), Metro Green Line, the Dubai Tram and buses C01, 27, 8 and X28, each direction as its own route (16 routes, 257 stops). Each route has the real stop order, the RTA fare zone of every stop, the median timetabled running time between stops, and the departure times for each day of the week. Fares follow RTA's Nol Silver zone prices: AED 3 within one zone, AED 5 across two, AED 7.50 for three or more (`zoneFares` in the region config). Vehicles are named per route (e.g. `DXB-MRED1A-03`); each route gets enough of them to run its busiest day.
@@ -267,6 +275,13 @@ The Dubai data lives in `db/data/dubai-rta.json` (60 KB), so seeding needs no do
 3. `npm run seed:reset` (or, on an existing database, remove the Dubai routes first: `npm run seed` only adds a region that has no routes yet).
 
 Limits of the Dubai data: RTA publishes no open live GPS feed, so Dubai vehicles move only when `npm run simulate` (or a real device) sends positions; until then arrivals are timetable times. The feed used is valid from 29 Aug to 31 Dec 2025; its weekly pattern (Monday to Thursday, Friday, Saturday, Sunday) is applied to every week, so service changes and public holidays after that are not reflected. Short workings (trips that start or end part-way along a line) are left out, and running times are the median for the line, not per trip.
+
+#### Hong Kong and Kuala Lumpur
+
+- **Hong Kong**: from the Transport Department's GTFS feed on [DATA.GOV.HK](https://data.gov.hk/en-data/dataset/hk-td-tis_11-pt-headway-en): the Hong Kong Tramways line (Shau Kei Wan to Kennedy Town), the Peak Tram, Citybus A21 (Hung Hom to the airport), KMB 1A and 6 and Citybus 6, each direction as its own route (12 routes). Fares are the feed's section fares: what you pay depends on where you board (A21 from the airport is HKD 34.60, HKD 8.40 once in Kowloon). In 37 of 347 boarding stops the feed's fare also varies by destination; RideTrack uses the fare to the end of the route there. The feed has no MTR rail, and times only its first and last stop, so stops in between are timed by distance.
+- **Kuala Lumpur**: from Prasarana's Rapid Rail feed on [data.gov.my](https://developer.data.gov.my/realtime-api/gtfs-static): the Ampang, Sri Petaling, Kelana Jaya and Shah Alam LRT lines, the Kajang and Putrajaya MRT lines, the KL Monorail and the Sunway BRT (16 routes, 162 stations). The feed gives frequencies ("every 3 minutes"), which become departure times. It has no fares, so fares are **estimated** by distance (MYR 1.20 + 0.15 per km, at most 6.40) until Prasarana's fare table is added. Rapid KL buses are not included yet.
+
+To add or refresh a city, download and unzip its GTFS feed, then run `node scripts/import-gtfs.js <unzipped folder> --city hong-kong` (or `kuala-lumpur`). It writes `db/data/<city>.json`; then `npm run seed:reset`. A new city needs an entry in `scripts/gtfs-cities.js` (which routes to take and how to name stops), a region in `src/config/regions.js` and a line in `GTFS_REGIONS` in `scripts/seed.js`. Neither feed is live GPS, so vehicles move only when `npm run simulate` (or a real device) sends positions.
 
 ## ⚙️ Configuration
 
@@ -412,7 +427,8 @@ Admins cannot use `/auth/login`, `/auth/refresh`, Google sign-in or the password
 
 | Method | Endpoint | Access | Description |
 | --- | --- | --- | --- |
-| `GET` | `/routes` | 🌐 Public | List routes (`q`, `mode`, `region` = `SRI_LANKA` or `DUBAI`) |
+| `GET` | `/regions` | 🌐 Public | Regions with their time zone, currency and fare model |
+| `GET` | `/routes` | 🌐 Public | List routes (`q`, `mode`, `region` = `SRI_LANKA`, `DUBAI`, `HONG_KONG` or `KUALA_LUMPUR`) |
 | `GET` | `/routes/:id` | 🌐 Public | Route details |
 | `GET` | `/routes/:id/arrivals` | 🌐 Public | Upcoming arrivals |
 | `GET` | `/routes/:id/vehicles` | 🌐 Public | Live vehicles on the route |
@@ -491,9 +507,9 @@ socket.on('vehicle:location', (pos) => console.log(pos));
 ```text
 ├── db/schema.sql            # MySQL schema
 ├── db/schema.mssql.sql      # the same schema for SQL Server / Azure SQL
-├── db/data/dubai-rta.json   # Dubai RTA routes, stops, zones and timetables (from scripts/import-dubai-gtfs.js)
+├── db/data/                 # GTFS-derived routes, stops and timetables: dubai-rta.json, hong-kong.json, kuala-lumpur.json
 ├── docker/                  # DB init scripts (test database)
-├── scripts/                 # migrate, seed, simulate, create-admin, import-dubai-gtfs
+├── scripts/                 # migrate, seed, simulate, create-admin, import-gtfs (+ gtfs-cities), import-dubai-gtfs
 ├── src/
 │   ├── app.js               # Express app and route wiring
 │   ├── admin/               # admin panel (static HTML/JS/CSS, served at /admin)

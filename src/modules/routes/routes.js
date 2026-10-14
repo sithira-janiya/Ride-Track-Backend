@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { REGION_CODES } from '../../config/regions.js';
+import { REGION_CODES, REGIONS } from '../../config/regions.js';
 import { requireAdminOr } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import { send, wrap } from '../../utils/async.js';
@@ -11,6 +11,12 @@ import { addRouteStop, arrivals, createRoute, createTrip, getRoute, nearbyStops,
 const id = z.coerce.number().int().positive();
 const mode = z.enum(['BUS', 'TRAIN']);
 const region = z.enum(REGION_CODES);
+
+/** The regions RideTrack serves, so apps and the admin panel need not hard-code them. Public. */
+export const regionsRouter = Router();
+regionsRouter.get('/', (_req, res) =>
+  send(res, Object.entries(REGIONS).map(([code, r]) => ({ region: code, ...r, zoneFares: r.zoneFares ?? null, distanceFare: r.distanceFare ?? null }))),
+);
 
 export const routesRouter = Router();
 

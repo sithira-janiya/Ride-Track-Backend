@@ -100,6 +100,23 @@ describe('regions', () => {
     expect(fareBetween('DUBAI', line, line[0], line[3])).toBe(7.5); // 3 zones or more
   });
 
+  it('charges Hong Kong fares by the boarding stop only', () => {
+    const hk = [
+      { stopSequence: 1, fareFromOrigin: 34.6 },
+      { stopSequence: 2, fareFromOrigin: 27.3 },
+      { stopSequence: 3, fareFromOrigin: 0 },
+    ];
+    expect(fareBetween('HONG_KONG', hk, hk[0], hk[2])).toBe(34.6);
+    expect(fareBetween('HONG_KONG', hk, hk[1], hk[2])).toBe(27.3);
+  });
+
+  it('estimates Kuala Lumpur fares from the distance along the route, capped', () => {
+    // about 11.1 km per 0.1 degree of latitude
+    const kl = [0, 0.05, 0.5].map((d, i) => ({ stopSequence: i + 1, latitude: 3 + d, longitude: 101.7 }));
+    expect(fareBetween('KUALA_LUMPUR', kl, kl[0], kl[1])).toBe(2); // 1.2 + 0.15 x 5.6 km
+    expect(fareBetween('KUALA_LUMPUR', kl, kl[0], kl[2])).toBe(6.4); // 55 km: the maximum
+  });
+
   it('finds midnight and the calendar day in a time zone', () => {
     expect(new Date(zonedMidnight('2026-03-02', 'Asia/Dubai')).toISOString()).toBe('2026-03-01T20:00:00.000Z');
     expect(new Date(zonedMidnight('2026-03-02', 'Asia/Colombo')).toISOString()).toBe('2026-03-01T18:30:00.000Z');

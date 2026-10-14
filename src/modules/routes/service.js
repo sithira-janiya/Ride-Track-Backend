@@ -8,7 +8,7 @@ import { emitOpsUpdate } from '../../realtime/index.js';
 import { getLivePosition } from '../vehicles/positions.js';
 import { clearStopsCache, getRouteStops } from './stops.js';
 
-/** A route as the app sees it. Times are shown in its region's time zone and fares in its currency. */
+/** A route as the app sees it. Times are shown in its region's time zone and fares in its currency, worked out by `fareModel`. */
 export const toRoute = (r) => {
   const region = regionInfo(r.region);
   return {
@@ -21,7 +21,9 @@ export const toRoute = (r) => {
     region: r.region,
     timeZone: region.timeZone,
     currency: region.currency,
-    zoneFares: region.zoneFares,
+    fareModel: region.fareModel,
+    zoneFares: region.zoneFares ?? null,
+    distanceFare: region.distanceFare ?? null,
   };
 };
 
