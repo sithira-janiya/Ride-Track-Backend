@@ -636,8 +636,20 @@ async function render() {
     page.replaceChildren(h('div', { class: 'card empty error' }, e.message));
   }
   if (seq !== renderSeq) return; // a newer render started meanwhile
-  $('#page').replaceChildren(page);
+  $('#page').replaceChildren(page, pageNav(name));
   $('#page-actions').replaceChildren(...actions.childNodes);
+}
+
+// Previous / Next buttons at the foot of every page, in menu order
+function pageNav(name) {
+  const names = Object.keys(TITLES);
+  const i = names.indexOf(name);
+  const link = (target, label, cls) => (target
+    ? h('a', { href: `#${target}`, class: `page-nav-btn ${cls}` }, label)
+    : h('span')); // keeps the other button on its side
+  return h('div', { class: 'page-nav', role: 'navigation', 'aria-label': 'Page navigation' },
+    link(names[i - 1], `← ${TITLES[names[i - 1]]}`, 'prev'),
+    link(names[i + 1], `${TITLES[names[i + 1]]} →`, 'next'));
 }
 
 function showLogin() {
