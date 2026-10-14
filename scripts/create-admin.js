@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import { parseArgs } from 'node:util';
 
-import { pool, query } from '../src/config/db.js';
+import { closePool, query } from '../src/config/db.js';
 import { ADMIN_PASSWORD, EMAIL, NAME } from '../src/modules/auth/schemas.js';
 import { hashPassword, revokeSessions } from '../src/modules/auth/service.js';
 
@@ -25,7 +25,7 @@ export async function createAdmin({ email, name = 'Administrator', password }) {
   const [existing] = await query('SELECT user_id, role FROM users WHERE email = ?', [email]);
   if (existing && existing.role !== 'ADMIN') throw new Error(`${email} already has an account (role ${existing.role}). Use another email for the admin.`);
   if (existing) {
-    await query('UPDATE users SET password_hash = ?, is_active = TRUE WHERE user_id = ?', [hash, existing.user_id]);
+    await query('UPDATE users SET password_hash = ?, is_active = 1 WHERE user_id = ?', [hash, existing.user_id]);
     await revokeSessions(existing.user_id);
     return { created: false };
   }
@@ -53,6 +53,6 @@ if (process.argv[1]?.endsWith('create-admin.js')) {
     console.error(e.message);
     process.exitCode = 1;
   } finally {
-    await pool.end();
+    await closePool();
   }
 }

@@ -1,4 +1,4 @@
-import { withTransaction } from '../../config/db.js';
+import { forUpdate, lock, withTransaction } from '../../config/db.js';
 import { notFound } from '../../utils/errors.js';
 import { activateTicket } from '../tickets/service.js';
 
@@ -9,11 +9,11 @@ import { activateTicket } from '../tickets/service.js';
  */
 export async function applyPaymentResult({ ticketId, gatewayRef, status }) {
   return withTransaction(async (conn) => {
-    const [[payment]] = await conn.query('SELECT * FROM payments WHERE ticket_id = ? FOR UPDATE', [ticketId]);
+    const [[payment]] = await conn.query(`SELECT * FROM payments${lock} WHERE ticket_id = ?${forUpdate}`, [ticketId]);
     if (!payment) throw notFound('Payment not found.');
     if (payment.status !== 'PENDING') return payment.status; // duplicate webhook
 
-    const [[ticket]] = await conn.query('SELECT trip_id, status FROM tickets WHERE ticket_id = ? FOR UPDATE', [ticketId]);
+    const [[ticket]] = await conn.query(`SELECT trip_id, status FROM tickets${lock} WHERE ticket_id = ?${forUpdate}`, [ticketId]);
 
     if (status === 'FAILED') {
       await conn.query("UPDATE payments SET status = 'FAILED', gateway_ref = ? WHERE payment_id = ?", [gatewayRef ?? null, payment.payment_id]);
@@ -23,11 +23,11 @@ export async function applyPaymentResult({ ticketId, gatewayRef, status }) {
 
     // paid, but the ticket was cancelled or expired while the passenger was at the gateway: money must go back
     if (ticket.status !== 'PENDING') {
-      await conn.query("UPDATE payments SET status = 'REFUNDED', gateway_ref = ?, paid_at = UTC_TIMESTAMP() WHERE payment_id = ?", [gatewayRef ?? null, payment.payment_id]);
+      await conn.query("UPDATE payments SET status = 'REFUNDED', gateway_ref = ?, paid_at = ? WHERE payment_id = ?", [gatewayRef ?? null, new Date(), payment.payment_id]);
       return 'REFUNDED';
     }
 
-    await conn.query("UPDATE payments SET status = 'PAID', gateway_ref = ?, paid_at = UTC_TIMESTAMP() WHERE payment_id = ?", [gatewayRef ?? null, payment.payment_id]);
+    await conn.query("UPDATE payments SET status = 'PAID', gateway_ref = ?, paid_at = ? WHERE payment_id = ?", [gatewayRef ?? null, new Date(), payment.payment_id]);
     await activateTicket(conn, ticketId, ticket.trip_id);
     return 'PAID';
   });

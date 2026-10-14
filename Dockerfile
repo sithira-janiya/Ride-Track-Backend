@@ -3,7 +3,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+# msnodesqlv8 (Windows authentication for SQL Server) is optional and Windows-only; containers use SQL logins
+RUN npm ci --omit=dev --omit=optional
 
 COPY src ./src
 COPY db ./db

@@ -1,16 +1,19 @@
 import http from 'node:http';
 
 import { createApp } from './app.js';
-import { pool } from './config/db.js';
+import { closePool, ping } from './config/db.js';
 import { env } from './config/env.js';
 import { startJobs } from './jobs/index.js';
 import { loadLatestPositions } from './modules/vehicles/positions.js';
 import { closeRealtime, initRealtime } from './realtime/index.js';
 
 const server = http.createServer(createApp());
+// outlive the idle timeout of load balancers and reverse proxies (Railway, nginx, IIS/ARR), so they never reuse a closed socket
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
 initRealtime(server);
 
-await pool.query('SELECT 1'); // fail fast if the database is unreachable
+await ping(); // fail fast if the database is unreachable
 await loadLatestPositions();
 const stopJobs = env.enableJobs ? startJobs() : () => {};
 
@@ -24,7 +27,7 @@ async function shutdown(signal) {
   stopJobs();
   closeRealtime();
   server.close(async () => {
-    await pool.end();
+    await closePool();
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 10_000).unref();

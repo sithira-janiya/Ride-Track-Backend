@@ -1,13 +1,13 @@
 import { query } from '../../config/db.js';
 import { badRequest, notFound } from '../../utils/errors.js';
-import { cumulativeMeters, liveEta, nextStopIndex } from '../../utils/eta.js';
+import { liveEta, nextStopIndex, stopOffsets } from '../../utils/eta.js';
 import { emitOpsUpdate, emitToRoute } from '../../realtime/index.js';
 import { getRouteStops } from '../routes/stops.js';
 import { getLatest, setLatest } from './positions.js';
 
 async function getVehicle(vehicleId) {
   const [v] = await query(
-    'SELECT v.*, r.mode FROM vehicles v JOIN routes r ON r.route_id = v.route_id WHERE v.vehicle_id = ? AND v.is_active = TRUE',
+    'SELECT v.*, r.mode FROM vehicles v JOIN routes r ON r.route_id = v.route_id WHERE v.vehicle_id = ? AND v.is_active = 1',
     [vehicleId],
   );
   if (!v) throw notFound('Vehicle not found.');
@@ -19,7 +19,7 @@ async function etaToNextStop(routeId, mode, pos, now = new Date()) {
   const stops = await getRouteStops(routeId);
   if (stops.length < 2) return null;
   const next = nextStopIndex(pos, stops);
-  return liveEta(pos, stops, cumulativeMeters(stops), next, mode, now);
+  return liveEta(pos, stops, stopOffsets(stops, mode), next, mode, now);
 }
 
 /** Newest passenger count per vehicle in one query (vehicleId -> count), instead of one query per vehicle. */
@@ -66,7 +66,7 @@ export async function setOccupancy(vehicleId, passengerCount) {
 /** Vehicles on a route that have reported at least one position. */
 export async function getRouteVehicles(routeId) {
   const vehicles = await query(
-    'SELECT v.*, r.mode FROM vehicles v JOIN routes r ON r.route_id = v.route_id WHERE v.route_id = ? AND v.is_active = TRUE ORDER BY v.vehicle_id',
+    'SELECT v.*, r.mode FROM vehicles v JOIN routes r ON r.route_id = v.route_id WHERE v.route_id = ? AND v.is_active = 1 ORDER BY v.vehicle_id',
     [routeId],
   );
   return (await describeMany(vehicles)).filter(Boolean);

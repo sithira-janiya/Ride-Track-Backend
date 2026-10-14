@@ -1,61 +1,80 @@
-import { query } from '../../config/db.js';
+import { isDuplicateKey, isMissingReference, limit as limitRows, query } from '../../config/db.js';
 import { env } from '../../config/env.js';
+import { regionInfo } from '../../config/regions.js';
 import { badRequest, conflict, notFound } from '../../utils/errors.js';
-import { cumulativeMeters, liveEta, scheduledEta } from '../../utils/eta.js';
+import { liveEta, scheduledEta, stopOffsets } from '../../utils/eta.js';
 import { boundingBox, haversineMeters } from '../../utils/geo.js';
 import { emitOpsUpdate } from '../../realtime/index.js';
 import { getLivePosition } from '../vehicles/positions.js';
 import { clearStopsCache, getRouteStops } from './stops.js';
 
-const toRoute = (r) => ({
-  routeId: r.route_id,
-  routeNo: r.route_no,
-  name: r.name,
-  mode: r.mode,
-  origin: r.origin,
-  destination: r.destination,
-});
+/** A route as the app sees it. Times are shown in its region's time zone and fares in its currency, worked out by `fareModel`. */
+export const toRoute = (r) => {
+  const region = regionInfo(r.region);
+  return {
+    routeId: r.route_id,
+    routeNo: r.route_no,
+    name: r.name,
+    mode: r.mode,
+    origin: r.origin,
+    destination: r.destination,
+    region: r.region,
+    timeZone: region.timeZone,
+    currency: region.currency,
+    fareModel: region.fareModel,
+    zoneFares: region.zoneFares ?? null,
+    distanceFare: region.distanceFare ?? null,
+  };
+};
 
-export async function searchRoutes({ q, mode, page, limit }) {
-  const where = ['is_active = TRUE'];
+export async function searchRoutes({ q, mode, region, page, limit }) {
+  const where = ['is_active = 1'];
   const params = [];
   if (mode) (where.push('mode = ?'), params.push(mode));
+  if (region) (where.push('region = ?'), params.push(region));
   if (q) {
-    const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
-    where.push('(route_no LIKE ? OR name LIKE ? OR origin LIKE ? OR destination LIKE ?)');
+    // '!' escapes LIKE wildcards the same way in MySQL and SQL Server (a backslash does not)
+    const like = `%${q.replace(/[%_![]/g, (c) => `!${c}`)}%`;
+    where.push("(route_no LIKE ? ESCAPE '!' OR name LIKE ? ESCAPE '!' OR origin LIKE ? ESCAPE '!' OR destination LIKE ? ESCAPE '!')");
     params.push(like, like, like, like);
   }
   const rows = await query(
-    `SELECT * FROM routes WHERE ${where.join(' AND ')} ORDER BY mode, route_no LIMIT ? OFFSET ?`,
-    [...params, limit, (page - 1) * limit],
+    `SELECT * FROM routes WHERE ${where.join(' AND ')} ORDER BY region DESC, mode, route_no, route_id ${limitRows(limit, (page - 1) * limit)}`,
+    params,
   );
   return rows.map(toRoute);
 }
 
 export async function getRoute(routeId) {
-  const [row] = await query('SELECT * FROM routes WHERE route_id = ? AND is_active = TRUE', [routeId]);
+  const [row] = await query('SELECT * FROM routes WHERE route_id = ? AND is_active = 1', [routeId]);
   if (!row) throw notFound('Route not found.');
   return { ...toRoute(row), stops: await getRouteStops(routeId) };
 }
 
 export async function nearbyStops({ lat, lng, radius }) {
   const box = boundingBox(lat, lng, radius);
+  // one row per (stop, route), grouped here: GROUP_CONCAT and STRING_AGG differ per database
   const rows = await query(
-    `SELECT s.stop_id, s.name, s.latitude, s.longitude,
-            GROUP_CONCAT(DISTINCT rs.route_id) AS route_ids
-       FROM stops s JOIN route_stops rs ON rs.stop_id = s.stop_id JOIN routes r ON r.route_id = rs.route_id AND r.is_active = TRUE
+    `SELECT DISTINCT s.stop_id, s.name, s.latitude, s.longitude, rs.route_id
+       FROM stops s JOIN route_stops rs ON rs.stop_id = s.stop_id JOIN routes r ON r.route_id = rs.route_id AND r.is_active = 1
       WHERE s.latitude BETWEEN ? AND ? AND s.longitude BETWEEN ? AND ?
-      GROUP BY s.stop_id`,
+      ORDER BY s.stop_id, rs.route_id`,
     [box.minLat, box.maxLat, box.minLng, box.maxLng],
   );
-  return rows
+  const byStop = new Map();
+  for (const r of rows) {
+    const stop = byStop.get(r.stop_id);
+    if (stop) stop.routeIds.push(r.route_id);
+    else byStop.set(r.stop_id, { ...r, routeIds: [r.route_id] });
+  }
+  return [...byStop.values()]
     .map((r) => ({
       stopId: r.stop_id,
       name: r.name,
       latitude: r.latitude,
       longitude: r.longitude,
       distanceMeters: Math.round(haversineMeters(lat, lng, r.latitude, r.longitude)),
-      routeIds: String(r.route_ids).split(',').map(Number),
+      routeIds: r.routeIds,
     }))
     .filter((s) => s.distanceMeters <= radius)
     .sort((a, b) => a.distanceMeters - b.distanceMeters)
@@ -64,31 +83,31 @@ export async function nearbyStops({ lat, lng, radius }) {
 
 /** Upcoming trips at a stop, soonest first. Live ETA when the vehicle is reporting, timetable otherwise. */
 export async function arrivals(routeId, stopId) {
-  const [route] = await query('SELECT mode FROM routes WHERE route_id = ? AND is_active = TRUE', [routeId]);
+  const [route] = await query('SELECT mode FROM routes WHERE route_id = ? AND is_active = 1', [routeId]);
   if (!route) throw notFound('Route not found.');
   const stops = await getRouteStops(routeId);
   const idx = stops.findIndex((s) => s.stopId === stopId);
   if (idx < 0) throw notFound('That stop is not on this route.');
-  const cum = cumulativeMeters(stops);
+  const offsets = stopOffsets(stops, route.mode);
 
   const trips = await query(
     `SELECT trip_id, vehicle_id, start_time, status FROM trips
       WHERE route_id = ? AND status IN ('SCHEDULED','ONGOING','DELAYED')
-        AND start_time BETWEEN UTC_TIMESTAMP() - INTERVAL 6 HOUR AND UTC_TIMESTAMP() + INTERVAL 12 HOUR
+        AND start_time BETWEEN ? AND ?
       ORDER BY start_time`,
-    [routeId],
+    [routeId, new Date(Date.now() - 6 * 3600000), new Date(Date.now() + 12 * 3600000)],
   );
 
   const now = new Date();
   const out = [];
   for (const t of trips) {
     const live = t.status !== 'SCHEDULED' ? await getLivePosition(t.vehicle_id, env.livePositionMaxAgeMs) : null;
-    let eta = live ? liveEta(live, stops, cum, idx, route.mode, now) : null;
+    let eta = live ? liveEta(live, stops, offsets, idx, route.mode, now) : null;
     let scheduled = false;
     if (!eta) {
       // no live position (or the vehicle has already passed this stop): fall back to the timetable
       if (live) continue; // live and passed this stop: not an upcoming arrival
-      eta = scheduledEta(new Date(t.start_time), cum, idx, route.mode);
+      eta = scheduledEta(new Date(t.start_time), offsets, idx);
       scheduled = true;
     }
     if (eta.getTime() < now.getTime() - 60_000) continue;
@@ -99,14 +118,14 @@ export async function arrivals(routeId, stopId) {
 
 // ---------- authority management ----------
 
-export async function createRoute({ routeNo, name, mode, origin, destination }) {
+export async function createRoute({ region = 'SRI_LANKA', routeNo, name, mode, origin, destination }) {
   try {
-    const r = await query('INSERT INTO routes (route_no, name, mode, origin, destination) VALUES (?, ?, ?, ?, ?)', [
-      routeNo, name, mode, origin, destination,
+    const r = await query('INSERT INTO routes (region, route_no, name, mode, origin, destination) VALUES (?, ?, ?, ?, ?, ?)', [
+      region, routeNo, name, mode, origin, destination,
     ]);
     return getRoute(r.insertId);
   } catch (e) {
-    if (e?.code === 'ER_DUP_ENTRY') throw conflict('A route with this number and mode already exists.', 'ROUTE_EXISTS');
+    if (isDuplicateKey(e)) throw conflict('A route with this number, mode and direction already exists.', 'ROUTE_EXISTS');
     throw e;
   }
 }
@@ -134,8 +153,8 @@ export async function addRouteStop(routeId, { stopId, name, latitude, longitude,
       routeId, id, stopSequence, fareFromOrigin,
     ]);
   } catch (e) {
-    if (e?.code === 'ER_DUP_ENTRY') throw conflict('That stop or position is already used on this route.', 'ROUTE_STOP_EXISTS');
-    if (e?.code === 'ER_NO_REFERENCED_ROW_2') throw notFound('Stop not found.');
+    if (isDuplicateKey(e)) throw conflict('That stop or position is already used on this route.', 'ROUTE_STOP_EXISTS');
+    if (isMissingReference(e)) throw notFound('Stop not found.');
     throw e;
   }
   clearStopsCache();
@@ -152,7 +171,7 @@ const toTrip = (t) => ({
 });
 
 export async function createTrip({ routeId, vehicleId, startTime, endTime }) {
-  const [vehicle] = await query('SELECT route_id FROM vehicles WHERE vehicle_id = ? AND is_active = TRUE', [vehicleId]);
+  const [vehicle] = await query('SELECT route_id FROM vehicles WHERE vehicle_id = ? AND is_active = 1', [vehicleId]);
   if (!vehicle) throw notFound('Vehicle not found.');
   if (vehicle.route_id !== routeId) throw badRequest('That vehicle is not assigned to this route.');
   const r = await query('INSERT INTO trips (route_id, vehicle_id, start_time, end_time) VALUES (?, ?, ?, ?)', [

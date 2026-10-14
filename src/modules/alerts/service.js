@@ -1,4 +1,4 @@
-import { query, withTransaction } from '../../config/db.js';
+import { insertMany, limit as limitRows, query, withTransaction } from '../../config/db.js';
 import { emitOpsUpdate, emitToUser } from '../../realtime/index.js';
 import { notFound } from '../../utils/errors.js';
 import { sendPush } from './push.js';
@@ -27,7 +27,7 @@ export async function publishAlert({ tripId, type, message, delayMinutes }) {
     ]);
     const [rows] = await conn.query("SELECT DISTINCT user_id FROM tickets WHERE trip_id = ? AND status IN ('PENDING','ACTIVE')", [tripId]);
     if (rows.length) {
-      await conn.query('INSERT INTO alert_recipients (alert_id, user_id) VALUES ?', [rows.map((r) => [a.insertId, r.user_id])]);
+      await insertMany('alert_recipients', ['alert_id', 'user_id'], rows.map((r) => [a.insertId, r.user_id]), conn);
     }
     if (type === 'CANCELLATION') await conn.query("UPDATE trips SET status = 'CANCELLED' WHERE trip_id = ?", [tripId]);
     if (type === 'DELAY') await conn.query("UPDATE trips SET status = 'DELAYED' WHERE trip_id = ? AND status IN ('SCHEDULED','ONGOING')", [tripId]);
@@ -45,27 +45,27 @@ export async function publishAlert({ tripId, type, message, delayMinutes }) {
 
 async function notifyDevices(userIds, body) {
   if (!userIds.length) return;
-  const rows = await query('SELECT user_id, push_token FROM users WHERE user_id IN (?) AND push_token IS NOT NULL AND notifications_enabled = TRUE', [userIds]);
+  const rows = await query('SELECT user_id, push_token FROM users WHERE user_id IN (?) AND push_token IS NOT NULL AND notifications_enabled = 1', [userIds]);
   const dead = await sendPush(rows.map((r) => r.push_token), { title: 'RideTrack alert', body });
   if (dead.length) await query('UPDATE users SET push_token = NULL WHERE push_token IN (?)', [dead]);
 }
 
-/** Passengers see the alerts addressed to them; officers see every alert that has been published. */
+/** Passengers see the alerts addressed to them; officers and admins see every alert that has been published. */
 export async function listAlerts(user, { unread, limit }) {
-  if (user.role === 'AUTHORITY') {
-    const rows = await query('SELECT * FROM delay_alerts ORDER BY created_at DESC, alert_id DESC LIMIT ?', [limit]);
+  if (user.role === 'AUTHORITY' || user.role === 'ADMIN') {
+    const rows = await query(`SELECT * FROM delay_alerts ORDER BY created_at DESC, alert_id DESC ${limitRows(limit)}`);
     return rows.map((r) => toAlert(r, true));
   }
   const rows = await query(
     `SELECT a.*, ar.is_read FROM delay_alerts a JOIN alert_recipients ar ON ar.alert_id = a.alert_id
-      WHERE ar.user_id = ? ${unread ? 'AND ar.is_read = FALSE' : ''} ORDER BY a.created_at DESC, a.alert_id DESC LIMIT ?`,
-    [user.id, limit],
+      WHERE ar.user_id = ? ${unread ? 'AND ar.is_read = 0' : ''} ORDER BY a.created_at DESC, a.alert_id DESC ${limitRows(limit)}`,
+    [user.id],
   );
   return rows.map((r) => toAlert(r));
 }
 
 export async function markRead(userId, alertId) {
-  const r = await query('UPDATE alert_recipients SET is_read = TRUE WHERE alert_id = ? AND user_id = ?', [alertId, userId]);
+  const r = await query('UPDATE alert_recipients SET is_read = 1 WHERE alert_id = ? AND user_id = ?', [alertId, userId]);
   if (!r.affectedRows) throw notFound('Alert not found.');
   const [row] = await query('SELECT a.*, ar.is_read FROM delay_alerts a JOIN alert_recipients ar ON ar.alert_id = a.alert_id WHERE a.alert_id = ? AND ar.user_id = ?', [alertId, userId]);
   return toAlert(row);

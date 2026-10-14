@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { requireAuth, requireRole } from '../../middleware/auth.js';
+import { REGION_CODES, REGIONS } from '../../config/regions.js';
+import { requireAdminOr } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import { send, wrap } from '../../utils/async.js';
 import { getRouteVehicles } from '../vehicles/service.js';
@@ -9,6 +10,13 @@ import { addRouteStop, arrivals, createRoute, createTrip, getRoute, nearbyStops,
 
 const id = z.coerce.number().int().positive();
 const mode = z.enum(['BUS', 'TRAIN']);
+const region = z.enum(REGION_CODES);
+
+/** The regions RideTrack serves, so apps and the admin panel need not hard-code them. Public. */
+export const regionsRouter = Router();
+regionsRouter.get('/', (_req, res) =>
+  send(res, Object.entries(REGIONS).map(([code, r]) => ({ region: code, ...r, zoneFares: r.zoneFares ?? null, distanceFare: r.distanceFare ?? null }))),
+);
 
 export const routesRouter = Router();
 
@@ -18,6 +26,7 @@ routesRouter.get(
     query: z.object({
       q: z.string().trim().max(100).optional(),
       mode: mode.optional(),
+      region: region.optional(),
       page: z.coerce.number().int().min(1).default(1),
       limit: z.coerce.number().int().min(1).max(100).default(50),
     }),
@@ -27,10 +36,10 @@ routesRouter.get(
 
 routesRouter.post(
   '/',
-  requireAuth,
-  requireRole('AUTHORITY'),
+  requireAdminOr('AUTHORITY'),
   validate({
     body: z.object({
+      region: region.optional(),
       routeNo: z.string().trim().min(1).max(20),
       name: z.string().trim().min(2).max(150),
       mode,
@@ -45,8 +54,7 @@ routesRouter.get('/:id', validate({ params: z.object({ id }) }), wrap(async (req
 
 routesRouter.patch(
   '/:id',
-  requireAuth,
-  requireRole('AUTHORITY'),
+  requireAdminOr('AUTHORITY'),
   validate({
     params: z.object({ id }),
     body: z
@@ -64,8 +72,7 @@ routesRouter.patch(
 
 routesRouter.post(
   '/:id/stops',
-  requireAuth,
-  requireRole('AUTHORITY'),
+  requireAdminOr('AUTHORITY'),
   validate({
     params: z.object({ id }),
     body: z.object({
@@ -107,7 +114,7 @@ stopsRouter.get(
 );
 
 export const tripsRouter = Router();
-tripsRouter.use(requireAuth, requireRole('AUTHORITY'));
+tripsRouter.use(requireAdminOr('AUTHORITY'));
 
 const when = z.coerce.date().transform((d) => d.toISOString());
 

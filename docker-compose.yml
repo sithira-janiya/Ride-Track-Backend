@@ -23,6 +23,21 @@ services:
       timeout: 5s
       retries: 20
 
+  # SQL Server instead of MySQL:  docker compose --profile mssql up -d mssql
+  # then run the API with DB_CLIENT=mssql DB_PORT=1434 DB_USER=sa DB_PASSWORD=RideTrack_dev1 (npm run migrate creates the database)
+  mssql:
+    profiles: ["mssql"]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: RideTrack_dev1
+    ports:
+      - "1434:1433" # 1434 on your machine so it does not clash with a local SQL Server
+    volumes:
+      - mssqldata:/var/opt/mssql
+
   api:
     build: .
     restart: unless-stopped
@@ -49,3 +64,4 @@ services:
 
 volumes:
   dbdata:
+  mssqldata:

@@ -6,10 +6,11 @@ import request from 'supertest';
 
 import { seed } from '../scripts/seed.js';
 import { createApp } from '../src/app.js';
-import { pool, query } from '../src/config/db.js';
+import { closePool, limit, query } from '../src/config/db.js';
 import { env } from '../src/config/env.js';
 import { closeRealtime, initRealtime } from '../src/realtime/index.js';
 import { resetPositionsCache } from '../src/modules/vehicles/positions.js';
+import { testOutbox } from '../src/utils/mailer.js';
 
 if (!env.db.database.endsWith('_test')) throw new Error('Refusing to run tests against a non-test database.');
 
@@ -68,11 +69,11 @@ beforeAll(async () => {
   passenger = await login('passenger@ridetrack.test');
   staff = await login('staff@ridetrack.test');
   officer = await login('officer@ridetrack.test');
-  [trip] = await query("SELECT trip_id, vehicle_id FROM trips WHERE route_id = 1 AND status IN ('SCHEDULED','ONGOING') ORDER BY start_time LIMIT 1");
+  [trip] = await query(`SELECT trip_id, vehicle_id FROM trips WHERE route_id = 1 AND status IN ('SCHEDULED','ONGOING') ORDER BY start_time ${limit(1)}`);
 });
 
 afterAll(async () => {
-  await pool.end();
+  await closePool();
 });
 
 describe('health', () => {
@@ -135,6 +136,77 @@ describe('auth', () => {
     expect(second.body.data.refreshToken).not.toBe(old);
     const reuse = await api().post('/api/v1/auth/refresh').send({ refreshToken: old });
     expect(reuse.status).toBe(401);
+  });
+
+  describe('forgot password', () => {
+    const forgot = (identifier) => api().post('/api/v1/auth/forgot-password').send({ identifier });
+    const reset = (body) => api().post('/api/v1/auth/reset-password').send(body);
+    const codeFor = (to) => [...testOutbox].reverse().find((m) => m.to === to)?.text.match(/\b\d{6}\b/)[0];
+    const expireCooldown = () => query('UPDATE password_resets SET created_at = ?', [new Date(Date.now() - 2 * 60000)]);
+
+    it('answers the same for known and unknown accounts and only emails the known one', async () => {
+      const before = testOutbox.length;
+      const known = await forgot('RIDER@example.com');
+      const unknown = await forgot('nobody@example.com');
+      expect(known.status).toBe(202);
+      expect(unknown.body).toEqual(known.body);
+      expect(testOutbox.length).toBe(before + 1);
+      expect(testOutbox.at(-1).to).toBe('rider@example.com');
+    });
+
+    it('never sends a code to an admin, who resets with scripts/create-admin.js', async () => {
+      const before = testOutbox.length;
+      const res = await forgot('admin@ridetrack.test');
+      expect(res.status).toBe(202);
+      expect(testOutbox.length).toBe(before);
+    });
+
+    it('does not send another code within a minute', async () => {
+      const before = testOutbox.length;
+      expect((await forgot('rider@example.com')).status).toBe(202);
+      expect(testOutbox.length).toBe(before);
+    });
+
+    it('rejects a wrong code and locks the code after too many attempts', async () => {
+      await expireCooldown();
+      await forgot('rider@example.com');
+      const code = codeFor('rider@example.com');
+      const wrong = code === '000000' ? '111111' : '000000';
+      for (let i = 0; i < 5; i++) {
+        const res = await reset({ identifier: 'rider@example.com', code: wrong, password: 'NewPassw0rd' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('RESET_CODE_INVALID');
+      }
+      expect((await reset({ identifier: 'rider@example.com', code, password: 'NewPassw0rd' })).status).toBe(400);
+    });
+
+    it('resets the password with the code, signs out old sessions and burns the code', async () => {
+      const session = await api().post('/api/v1/auth/login').send({ identifier: 'rider@example.com', password: account.password });
+      await expireCooldown();
+      await forgot('rider@example.com');
+      const code = codeFor('rider@example.com');
+      expect((await reset({ identifier: 'rider@example.com', code, password: 'weak' })).status).toBe(400);
+
+      const res = await reset({ identifier: 'rider@example.com', code, password: 'NewPassw0rd' });
+      expect(res.status).toBe(200);
+      expect(res.body.data.accessToken).toBeTruthy();
+      expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: session.body.data.refreshToken })).status).toBe(401);
+      expect((await api().post('/api/v1/auth/login').send({ identifier: 'rider@example.com', password: account.password })).status).toBe(401);
+      expect((await api().post('/api/v1/auth/login').send({ identifier: 'rider@example.com', password: 'NewPassw0rd' })).status).toBe(200);
+      expect((await reset({ identifier: 'rider@example.com', code, password: 'Another1pass' })).status).toBe(400);
+
+      // put the original password back for the tests below
+      await expireCooldown();
+      await forgot('rider@example.com');
+      expect((await reset({ identifier: 'rider@example.com', code: codeFor('rider@example.com'), password: account.password })).status).toBe(200);
+    });
+
+    it('works for phone-only accounts', async () => {
+      await forgot('077-123-4567');
+      const res = await reset({ identifier: '0771234567', code: codeFor('0771234567'), password: 'PhoneNew1x' });
+      expect(res.status).toBe(200);
+      expect((await api().post('/api/v1/auth/login').send({ identifier: '0771234567', password: 'PhoneNew1x' })).status).toBe(200);
+    });
   });
 
   it('protects /users/me and enforces roles', async () => {
@@ -204,10 +276,10 @@ describe('admin', () => {
     expect((await users().set(auth(passenger.token))).status).toBe(403);
     const res = await api().get('/api/v1/admin/users?role=AUTHORITY').set(auth(admin.token));
     expect(res.status).toBe(200);
-    expect(res.body.data.map((u) => u.email)).toContain('officer@ridetrack.test');
-    expect(res.body.data.every((u) => u.role === 'AUTHORITY')).toBe(true);
-    expect(res.body.data[0].passwordHash).toBeUndefined();
-    expect((await api().get('/api/v1/admin/users?q=%25').set(auth(admin.token))).body.data).toHaveLength(0);
+    expect(res.body.data.users.map((u) => u.email)).toContain('officer@ridetrack.test');
+    expect(res.body.data.users.every((u) => u.role === 'AUTHORITY')).toBe(true);
+    expect(res.body.data.users[0].passwordHash).toBeUndefined();
+    expect((await api().get('/api/v1/admin/users?q=%25').set(auth(admin.token))).body.data).toEqual({ total: 0, users: [] });
   });
 
   it('creates staff and officer accounts that can sign in to the app', async () => {
@@ -277,9 +349,11 @@ describe('admin', () => {
 
 describe('routes and stops', () => {
   it('lists and filters routes', async () => {
-    const all = await api().get('/api/v1/routes');
+    const all = await api().get('/api/v1/routes?region=SRI_LANKA');
     expect(all.body.data.map((r) => r.routeNo).sort()).toEqual(['138', '177', 'MAIN']);
-    expect((await api().get('/api/v1/routes?mode=TRAIN')).body.data).toHaveLength(1);
+    expect(all.body.data[0]).toMatchObject({ region: 'SRI_LANKA', timeZone: 'Asia/Colombo', currency: 'LKR' });
+    expect((await api().get('/api/v1/routes?mode=TRAIN&region=SRI_LANKA')).body.data).toHaveLength(1);
+    expect((await api().get('/api/v1/routes?region=MARS')).status).toBe(400);
     expect((await api().get('/api/v1/routes?q=kottawa')).body.data[0].routeNo).toBe('138');
     expect((await api().get('/api/v1/routes?q=%25')).body.data).toHaveLength(0); // wildcard characters are treated literally
   });
@@ -312,6 +386,109 @@ describe('routes and stops', () => {
     expect(list.every((a) => a.scheduled === true)).toBe(true);
     expect(list.map((a) => a.eta)).toEqual([...list.map((a) => a.eta)].sort());
     expect((await api().get('/api/v1/routes/1/arrivals?stopId=8')).status).toBe(404); // Kandy is not on route 1
+  });
+});
+
+describe('Dubai (RTA timetable data)', () => {
+  let red; // Metro Red Line, Centrepoint to Expo 2020
+
+  it('lists the Dubai Metro, tram and bus routes with Dubai time and dirhams', async () => {
+    const res = await api().get('/api/v1/routes?region=DUBAI');
+    const nos = new Set(res.body.data.map((r) => r.routeNo));
+    expect([...nos].sort()).toEqual(['27', '8', 'C01', 'Green', 'Red', 'Tram', 'X28']);
+    expect(res.body.data.every((r) => r.timeZone === 'Asia/Dubai' && r.currency === 'AED')).toBe(true);
+    red = res.body.data.find((r) => r.name === 'Metro Red Line - Centrepoint to Expo 2020');
+    expect(red).toMatchObject({ mode: 'TRAIN', origin: 'Centrepoint', destination: 'Expo 2020', zoneFares: [3, 5, 7.5] });
+  });
+
+  it('returns real stops with fare zones and timetabled running times', async () => {
+    const { stops } = (await api().get(`/api/v1/routes/${red.routeId}`)).body.data;
+    expect(stops).toHaveLength(31);
+    expect(stops[0]).toMatchObject({ name: 'Centrepoint Metro Station', fareZone: '5', secondsFromOrigin: 0, fareFromOrigin: 0 });
+    expect(stops.at(-1).name).toBe('Expo 2020 Metro Station');
+    const seconds = stops.map((s) => s.secondsFromOrigin);
+    expect(seconds).toEqual([...seconds].sort((a, b) => a - b));
+    expect(stops.at(-1).fareFromOrigin).toBe(7.5); // crosses more than two zones
+  });
+
+  it('times arrivals by the timetable: departure plus the running time to that stop', async () => {
+    const { stops } = (await api().get(`/api/v1/routes/${red.routeId}`)).body.data;
+    const stop = stops[14]; // Burj Khalifa/Dubai Mall
+    const list = (await api().get(`/api/v1/routes/${red.routeId}/arrivals?stopId=${stop.stopId}`)).body.data;
+    expect(list.length).toBeGreaterThan(0);
+    const [t] = await query('SELECT start_time FROM trips WHERE trip_id = ?', [list[0].tripId]);
+    expect(new Date(list[0].eta).getTime() - new Date(t.start_time).getTime()).toBe(stop.secondsFromOrigin * 1000);
+  });
+
+  it('builds trips from departure times in Dubai time, and does not add them twice', async () => {
+    const { fillTimetable } = await import('../src/modules/routes/timetable.js');
+    const [dep] = await query(`SELECT depart_minute FROM route_departures WHERE route_id = ? ORDER BY depart_minute ${limit(1)}`, [red.routeId]);
+    const trips = await query('SELECT start_time FROM trips WHERE route_id = ?', [red.routeId]);
+    expect(trips.length).toBeGreaterThan(0);
+    // every trip starts on a minute that is in the timetable, counted from midnight in Dubai (UTC+4)
+    const minutes = new Set((await query('SELECT depart_minute FROM route_departures WHERE route_id = ?', [red.routeId])).map((d) => d.depart_minute % 1440));
+    for (const { start_time: st } of trips) expect(minutes.has((new Date(st).getUTCHours() * 60 + new Date(st).getUTCMinutes() + 240) % 1440)).toBe(true);
+    expect(dep.depart_minute).toBeGreaterThanOrEqual(5 * 60); // the metro starts at about 5 am
+    // inside the window the seed filled (3 hours back to 12 ahead), everything already exists
+    const now = Date.now();
+    expect(await fillTimetable(new Date(now - 2 * 3600000), new Date(now + 11 * 3600000))).toBe(0);
+  });
+
+  it('charges Dubai tickets by fare zones, in dirhams', async () => {
+    const { stops } = (await api().get(`/api/v1/routes/${red.routeId}`)).body.data;
+    const [future] = await query(`SELECT trip_id FROM trips WHERE route_id = ? AND status = 'SCHEDULED' ORDER BY start_time ${limit(1)}`, [red.routeId]);
+    const sameZone = stops.filter((s) => s.fareZone === stops[0].fareZone);
+    const res = await api().post('/api/v1/tickets').set(auth(passenger.token)).send({ tripId: future.trip_id, boardStopId: stops[0].stopId, alightStopId: sameZone.at(-1).stopId });
+    expect(res.status).toBe(201);
+    const t = (await api().get(`/api/v1/tickets/${res.body.data.ticketId}`).set(auth(passenger.token))).body.data;
+    expect(t).toMatchObject({ fare: 3, currency: 'AED', timeZone: 'Asia/Dubai', routeNo: 'Red' });
+    const far = await api().post('/api/v1/tickets').set(auth(passenger.token)).send({ tripId: future.trip_id, boardStopId: stops[0].stopId, alightStopId: stops.at(-1).stopId });
+    expect((await api().get(`/api/v1/tickets/${far.body.data.ticketId}`).set(auth(passenger.token))).body.data.fare).toBe(7.5);
+  });
+});
+
+describe('more regions (Hong Kong and Kuala Lumpur GTFS data)', () => {
+  const futureTrip = async (routeId) =>
+    (await query(`SELECT trip_id FROM trips WHERE route_id = ? AND status = 'SCHEDULED' ORDER BY start_time ${limit(1)}`, [routeId]))[0];
+  const book = (tripId, board, alight) =>
+    api().post('/api/v1/tickets').set(auth(passenger.token)).send({ tripId, boardStopId: board.stopId, alightStopId: alight.stopId });
+  const fareOf = async (res) => (await api().get(`/api/v1/tickets/${res.body.data.ticketId}`).set(auth(passenger.token))).body.data;
+
+  it('lists every region with its clock, currency and fare model', async () => {
+    const res = await api().get('/api/v1/regions');
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((r) => r.region)).toEqual(['SRI_LANKA', 'DUBAI', 'HONG_KONG', 'KUALA_LUMPUR']);
+    expect(res.body.data.find((r) => r.region === 'HONG_KONG')).toMatchObject({ timeZone: 'Asia/Hong_Kong', currency: 'HKD', fareModel: 'BOARDING' });
+    expect(res.body.data.find((r) => r.region === 'KUALA_LUMPUR')).toMatchObject({ timeZone: 'Asia/Kuala_Lumpur', currency: 'MYR', fareModel: 'DISTANCE' });
+  });
+
+  it('charges Hong Kong section fares by the stop you board at, in Hong Kong dollars', async () => {
+    const routes = (await api().get('/api/v1/routes?region=HONG_KONG')).body.data;
+    expect(routes.every((r) => r.timeZone === 'Asia/Hong_Kong' && r.currency === 'HKD' && r.fareModel === 'BOARDING')).toBe(true);
+    expect(routes.map((r) => r.routeNo)).toEqual(expect.arrayContaining(['Tram', 'Peak Tram', 'A21', '1A']));
+    const a21 = routes.find((r) => r.origin === 'Airport (Ground Transportation Centre)');
+    const { stops } = (await api().get(`/api/v1/routes/${a21.routeId}`)).body.data;
+    expect(stops[0].fareFromOrigin).toBe(34.6);
+    const later = stops.find((s) => s.fareFromOrigin < stops[0].fareFromOrigin); // the fare drops once past the Lantau section
+    const trip = await futureTrip(a21.routeId);
+    expect(await fareOf(await book(trip.trip_id, stops[0], stops[1]))).toMatchObject({ fare: 34.6, currency: 'HKD', timeZone: 'Asia/Hong_Kong' });
+    expect((await fareOf(await book(trip.trip_id, stops[0], stops.at(-1)))).fare).toBe(34.6);
+    expect((await fareOf(await book(trip.trip_id, later, stops.at(-1)))).fare).toBe(later.fareFromOrigin);
+  });
+
+  it('runs every Rapid KL rail line and estimates fares by distance, in ringgit', async () => {
+    const routes = (await api().get('/api/v1/routes?region=KUALA_LUMPUR&limit=100')).body.data;
+    expect(new Set(routes.map((r) => r.routeNo))).toEqual(new Set(['AGL', 'KJL', 'SPL', 'KGL', 'PYL', 'MRL', 'BRT', 'SAL']));
+    const kj = routes.find((r) => r.routeNo === 'KJL' && r.origin === 'Gombak');
+    expect(kj).toMatchObject({ mode: 'TRAIN', currency: 'MYR', fareModel: 'DISTANCE', distanceFare: { base: 1.2, perKm: 0.15, max: 6.4 } });
+    const { stops } = (await api().get(`/api/v1/routes/${kj.routeId}`)).body.data;
+    expect(stops).toHaveLength(37);
+    const trip = await futureTrip(kj.routeId);
+    const short = (await fareOf(await book(trip.trip_id, stops[0], stops[1]))).fare;
+    const long = (await fareOf(await book(trip.trip_id, stops[0], stops.at(-1)))).fare;
+    expect(short).toBeGreaterThanOrEqual(1.2);
+    expect(long).toBe(6.4); // capped
+    expect(short).toBeLessThan(long);
   });
 });
 
@@ -355,9 +532,11 @@ describe('live tracking', () => {
     const url = `http://localhost:${server.address().port}`;
     const client = connect(url, { auth: { token: passenger.token }, transports: ['websocket'] });
     const bad = connect(url, { auth: { token: 'nope' }, transports: ['websocket'], reconnection: false });
+    // listen straight away: the refusal can arrive before the good client has connected
+    const refused = new Promise((resolve) => bad.on('connect_error', (e) => resolve(e.message)));
     try {
       await new Promise((r) => client.on('connect', r));
-      await expect(within(3000, new Promise((resolve) => bad.on('connect_error', (e) => resolve(e.message))))).resolves.toBe('UNAUTHORIZED');
+      await expect(within(3000, refused)).resolves.toBe('UNAUTHORIZED');
       client.emit('route:subscribe', { routeId: 1 });
       await new Promise((r) => setTimeout(r, 200));
       const got = new Promise((resolve) => client.on('vehicle:location', resolve));
@@ -547,7 +726,7 @@ describe('alerts', () => {
   });
 
   it('cancels the trip and its tickets when a cancellation is published', async () => {
-    const [other] = await query("SELECT trip_id FROM trips WHERE route_id = 1 AND status = 'SCHEDULED' AND trip_id <> ? ORDER BY start_time LIMIT 1", [trip.trip_id]);
+    const [other] = await query(`SELECT trip_id FROM trips WHERE route_id = 1 AND status = 'SCHEDULED' AND trip_id <> ? ORDER BY start_time ${limit(1)}`, [trip.trip_id]);
     const t = await buy({ tripId: other.trip_id });
     await webhook({ ticketId: t.body.data.ticketId, status: 'PAID' });
     await api().post('/api/v1/alerts').set(auth(officer.token)).send({ tripId: other.trip_id, type: 'CANCELLATION', message: 'This trip is cancelled.' });
@@ -609,20 +788,102 @@ describe('authority', () => {
   });
 });
 
+describe('admin panel', () => {
+  let adminToken;
+  const asOfficer = (method, path) => api()[method](`/api/v1/admin${path}`).set(auth(officer.token));
+  const asAdmin = (method, path) => api()[method](`/api/v1/admin${path}`).set(auth(adminToken));
+
+  beforeAll(async () => {
+    adminToken = (await adminLogin('admin@ridetrack.test')).token;
+  });
+
+  it('serves the admin panel', async () => {
+    expect((await api().get('/admin')).headers.location).toBe('/admin/');
+    const page = await api().get('/admin/');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('RideTrack Admin');
+    expect((await api().get('/admin/app.js')).status).toBe(200);
+  });
+
+  it('is for admins and authority officers, with accounts for admins only', async () => {
+    expect((await api().get('/api/v1/admin/overview')).status).toBe(401);
+    expect((await api().get('/api/v1/admin/overview').set(auth(staff.token))).status).toBe(403);
+    expect((await asOfficer('get', '/overview')).status).toBe(200);
+    expect((await asAdmin('get', '/overview')).status).toBe(200);
+    expect((await asOfficer('get', '/users')).status).toBe(403);
+    expect((await asOfficer('post', '/users').send({})).status).toBe(403);
+    expect((await asOfficer('patch', `/users/${passenger.user.userId}`).send({ isActive: false })).status).toBe(403);
+  });
+
+  it('returns overview numbers and lists', async () => {
+    const o = (await asOfficer('get', '/overview')).body.data;
+    expect(o.users).toEqual(expect.objectContaining({ total: expect.any(Number), officers: expect.any(Number), admins: expect.any(Number) }));
+    expect(o.fleet.routes).toBeGreaterThan(0);
+    const users = (await asAdmin('get', '/users?role=STAFF')).body.data;
+    expect(users.users.every((u) => u.role === 'STAFF')).toBe(true);
+    expect(users.users.find((u) => u.employeeNo === 'ST-001')).toEqual(expect.objectContaining({ staffType: 'CONDUCTOR', vehicleId: 101 }));
+    expect(users.users[0]).not.toHaveProperty('passwordHash');
+    expect((await asOfficer('get', '/routes')).body.data[0]).toEqual(expect.objectContaining({ stops: expect.any(Number), isActive: true }));
+    expect((await asOfficer('get', `/trips?date=${new Date().toISOString().slice(0, 10)}`)).status).toBe(200);
+    expect((await asOfficer('get', '/tickets')).body.data).toEqual(expect.objectContaining({ total: expect.any(Number), tickets: expect.any(Array) }));
+  });
+
+  it('creates staff accounts that can log in, and disables them', async () => {
+    const body = { name: 'Panel Conductor', email: 'conductor3@ridetrack.test', password: PASSWORD.slice(0, -1) + '9', role: 'STAFF', employeeNo: 'ST-777', organisation: 'Demo Transport Co.', staffType: 'CONDUCTOR', vehicleId: 101 };
+    const created = await asAdmin('post', '/users').send(body);
+    expect(created.status).toBe(201);
+    expect(created.body.data.role).toBe('STAFF');
+    expect((await asAdmin('post', '/users').send(body)).status).toBe(409);
+    expect((await asAdmin('post', '/users').send({ ...body, email: 'x@ridetrack.test', employeeNo: 'ST-778', staffType: undefined })).status).toBe(400);
+
+    const login1 = await api().post('/api/v1/auth/login').send({ identifier: body.email, password: body.password });
+    expect(login1.status).toBe(200);
+    const id = created.body.data.userId;
+    expect((await asAdmin('patch', `/users/${id}`).send({ vehicleId: 102 })).status).toBe(200);
+    const [{ vehicle_id: vehicleId }] = await query('SELECT vehicle_id FROM staff WHERE user_id = ?', [id]);
+    expect(vehicleId).toBe(102);
+    expect((await asAdmin('patch', `/users/${id}`).send({ isActive: false })).body.data.isActive).toBe(false);
+    expect((await api().post('/api/v1/auth/login').send({ identifier: body.email, password: body.password })).status).toBe(401);
+    expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: login1.body.data.refreshToken })).status).toBe(401);
+    expect((await asAdmin('patch', `/users/${officer.user.userId}`).send({ vehicleId: 101 })).status).toBe(400); // only staff ride a vehicle
+  });
+
+  it('lets admins use the operations endpoints the panel calls', async () => {
+    const as = (method, path) => api()[method](`/api/v1${path}`).set(auth(adminToken));
+    expect((await as('get', '/ops/dashboard')).status).toBe(200);
+    expect((await as('get', '/alerts')).status).toBe(200);
+    const day = new Date().toISOString().slice(0, 10);
+    const [{ n: before }] = await query('SELECT COUNT(*) AS n FROM reports');
+    expect((await as('get', `/reports?type=DELAYS&from=${day}&to=${day}`)).status).toBe(200);
+    const [{ n: after }] = await query('SELECT COUNT(*) AS n FROM reports');
+    expect(Number(after)).toBe(Number(before)); // the reports log is for officers only
+    expect((await as('get', '/tickets')).status).toBe(403); // not a passenger
+  });
+
+  it('manages vehicles', async () => {
+    const v = await asOfficer('post', '/vehicles').send({ regNo: 'NB-9999', type: 'BUS', capacity: 40, routeId: 1 });
+    expect(v.status).toBe(201);
+    expect(v.body.data).toMatchObject({ regNo: 'NB-9999', routeId: 1, isActive: true });
+    expect((await asOfficer('post', '/vehicles').send({ regNo: 'NB-9999', type: 'BUS', capacity: 40, routeId: 1 })).status).toBe(409);
+    const updated = await asAdmin('patch', `/vehicles/${v.body.data.vehicleId}`).send({ capacity: 45, isActive: false });
+    expect(updated.body.data).toMatchObject({ capacity: 45, isActive: false });
+  });
+});
+
 describe('background jobs', () => {
   it('advances trips by the clock', async () => {
     const { advanceTrips } = await import('../src/jobs/index.js');
-    await query("INSERT INTO trips (route_id, vehicle_id, start_time, end_time, status) VALUES (3, 301, UTC_TIMESTAMP() - INTERVAL 5 MINUTE, UTC_TIMESTAMP() + INTERVAL 30 MINUTE, 'SCHEDULED')");
-    await query("INSERT INTO trips (route_id, vehicle_id, start_time, end_time, status) VALUES (3, 301, UTC_TIMESTAMP() - INTERVAL 90 MINUTE, UTC_TIMESTAMP() - INTERVAL 5 MINUTE, 'ONGOING')");
+    await query("INSERT INTO trips (route_id, vehicle_id, start_time, end_time, status) VALUES (3, 301, ?, ?, 'SCHEDULED')", [new Date(Date.now() - 5 * 60000), new Date(Date.now() - -30 * 60000)]);
+    await query("INSERT INTO trips (route_id, vehicle_id, start_time, end_time, status) VALUES (3, 301, ?, ?, 'ONGOING')", [new Date(Date.now() - 90 * 60000), new Date(Date.now() - 5 * 60000)]);
     await advanceTrips();
-    const rows = await query('SELECT status FROM trips WHERE route_id = 3 AND vehicle_id = 301 ORDER BY trip_id DESC LIMIT 2');
+    const rows = await query(`SELECT status FROM trips WHERE route_id = 3 AND vehicle_id = 301 ORDER BY trip_id DESC ${limit(2)}`);
     expect(rows.map((r) => r.status).sort()).toEqual(['COMPLETED', 'ONGOING']);
   });
 
   it('expires unpaid tickets after 30 minutes', async () => {
     const { expireTickets } = await import('../src/jobs/index.js');
     const created = await api().post('/api/v1/tickets').set(auth(passenger.token)).send({ tripId: trip.trip_id, boardStopId: 1, alightStopId: 2 });
-    await query('UPDATE tickets SET issued_at = UTC_TIMESTAMP() - INTERVAL 31 MINUTE WHERE ticket_id = ?', [created.body.data.ticketId]);
+    await query('UPDATE tickets SET issued_at = ? WHERE ticket_id = ?', [new Date(Date.now() - 31 * 60000), created.body.data.ticketId]);
     await expireTickets();
     const t = await api().get(`/api/v1/tickets/${created.body.data.ticketId}`).set(auth(passenger.token));
     expect(t.body.data).toMatchObject({ status: 'EXPIRED', paymentStatus: 'FAILED' });

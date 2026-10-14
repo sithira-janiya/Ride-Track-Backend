@@ -1,4 +1,4 @@
-import { query } from '../../config/db.js';
+import { limit, query } from '../../config/db.js';
 import { forbidden, notFound } from '../../utils/errors.js';
 import { verifyQrToken } from '../tickets/qr.js';
 
@@ -68,7 +68,7 @@ export async function tripScans(tripId) {
   const rows = await query(
     `SELECT s.scan_id, s.ticket_id, s.staff_id, s.result, s.scanned_at
        FROM ticket_scans s LEFT JOIN tickets t ON t.ticket_id = s.ticket_id
-      WHERE t.trip_id = ? ORDER BY s.scanned_at DESC, s.scan_id DESC LIMIT 500`,
+      WHERE t.trip_id = ? ORDER BY s.scanned_at DESC, s.scan_id DESC ${limit(500)}`,
     [tripId],
   );
   return rows.map((r) => ({ scanId: r.scan_id, ticketId: r.ticket_id, staffId: r.staff_id, result: r.result, scannedAt: new Date(r.scanned_at).toISOString() }));

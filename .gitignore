@@ -7,3 +7,4 @@ firebase-service-account*.json
 coverage/
 .DS_Store
 desktop.ini
+.expo/
