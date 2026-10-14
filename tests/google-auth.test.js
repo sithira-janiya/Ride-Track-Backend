@@ -63,6 +63,13 @@ describe('POST /auth/google', () => {
     expect(res.body.error.code).toBe('GOOGLE_TOKEN_INVALID');
   });
 
+  it('does not sign an admin in, since admin sessions only come from the admin sign-in', async () => {
+    googleReturns(claims({ email: 'admin@ridetrack.test' }));
+    const res = await signIn();
+    expect(res.status).toBe(401);
+    expect(res.body.data).toBeUndefined();
+  });
+
   it('rejects a token Google does not accept', async () => {
     googleReturns({ error: 'invalid_token' }, false);
     expect((await signIn()).status).toBe(401);

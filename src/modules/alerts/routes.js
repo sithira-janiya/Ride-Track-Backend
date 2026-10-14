@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-import { requireAuth, requireRole } from '../../middleware/auth.js';
+import { requireAdminOr, requireAuth, requireRole } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import { send, wrap } from '../../utils/async.js';
 import { listAlerts, markRead, publishAlert } from './service.js';
@@ -11,7 +11,7 @@ router.use(requireAuth);
 
 router.get(
   '/',
-  requireRole('PASSENGER', 'AUTHORITY'),
+  requireAdminOr('PASSENGER', 'AUTHORITY'),
   validate({
     query: z.object({
       unread: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
@@ -30,7 +30,7 @@ router.patch(
 
 router.post(
   '/',
-  requireRole('AUTHORITY'),
+  requireAdminOr('AUTHORITY'),
   validate({
     body: z.object({
       tripId: z.number().int().positive(),

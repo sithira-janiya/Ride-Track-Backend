@@ -29,10 +29,10 @@ Live tracking · QR ticketing · Payments · Delay alerts
 <!-- STATS:START -->
 <table>
   <tr>
-    <td align="center"><h2>45</h2>REST endpoints</td>
+    <td align="center"><h2>48</h2>REST endpoints</td>
     <td align="center"><h2>19</h2>DB tables</td>
     <td align="center"><h2>10</h2>API modules</td>
-    <td align="center"><h2>77</h2>automated tests</td>
+    <td align="center"><h2>91</h2>automated tests</td>
     <td align="center"><h2>5</h2>background jobs</td>
     <td align="center"><h2>13</h2>runtime deps</td>
   </tr>
@@ -49,7 +49,7 @@ RideTrack is the REST + WebSocket backend for a public transport app, built arou
     <td width="25%" valign="top"><h3>🧑 Passenger</h3>Browse routes and stops, follow vehicles live, buy tickets, get delay alerts.</td>
     <td width="25%" valign="top"><h3>🎟️ Staff</h3>Scan and validate QR tickets, report vehicle occupancy.</td>
     <td width="25%" valign="top"><h3>🛠️ Authority</h3>Manage routes and trips, watch the live dashboard, publish alerts, run reports.</td>
-    <td width="25%" valign="top"><h3>🔐 Admin</h3>Create staff, officer and admin accounts; disable and re-enable accounts.</td>
+    <td width="25%" valign="top"><h3>🔐 Admin</h3>Create staff, officer and admin accounts; disable and re-enable accounts; everything officers can do in the admin panel.</td>
   </tr>
 </table>
 
@@ -235,12 +235,13 @@ This starts MySQL and the API together. The compose file uses throwaway developm
 
 ### Admin panel
 
-Open [http://localhost:3000/admin](http://localhost:3000/admin) and sign in with an authority account (e.g. `officer@ridetrack.test`). From there officers can:
+Open [http://localhost:3000/admin](http://localhost:3000/admin) and sign in with an admin account (e.g. `admin@ridetrack.test`) or an authority account (e.g. `officer@ridetrack.test`). Admins and officers can:
 
 - see live vehicles, delays, today's trips and sales at a glance
-- search users, create staff and officer accounts, assign conductors to vehicles, and disable accounts (which also signs them out)
 - create and edit routes and stops, add or retire vehicles, schedule trips and change their status
 - browse tickets and payments, publish delay/cancellation alerts and run reports
+
+Admins also get the **Users** page: search accounts, create staff, officer and admin accounts, assign conductors to vehicles, and disable accounts (which also signs them out). Officers do not see it.
 
 The panel is plain HTML/JS served by the API itself (`src/admin/`), so there is nothing extra to build or deploy.
 
@@ -385,16 +386,23 @@ Base URL: `/api/v1`. Send `Authorization: Bearer <accessToken>` unless noted. Br
 <details open>
 <summary><b>Admin</b></summary>
 
-Admins cannot use `/auth/login` or `/auth/refresh`, and app accounts cannot use the admin sign-in. Create the first admin with `npm run create-admin -- --email you@example.com`.
+Admins cannot use `/auth/login`, `/auth/refresh`, Google sign-in or the password reset, and app accounts cannot use the admin sign-in. Create the first admin with `npm run create-admin -- --email you@example.com`; running it again resets that admin's password. The other `/admin` endpoints back the admin panel.
 
 | Method | Endpoint | Access | Description |
 | --- | --- | --- | --- |
 | `POST` | `/admin/auth/login` | 🌐 Public | Admin sign-in with `{ email, password }` |
 | `POST` | `/admin/auth/refresh` | 🌐 Public | Rotate an admin refresh token |
 | `POST` | `/admin/auth/logout` | 🌐 Public | Revoke an admin refresh token |
-| `GET` | `/admin/users` | 🔐 Admin | List accounts (`role`, `q`, `page`, `limit`) |
+| `GET` | `/admin/overview` | 🔐 Admin, 🛠️ Authority | Headline counts: users, fleet, today's trips and sales |
+| `GET` | `/admin/users` | 🔐 Admin | List accounts (`role`, `q`, `page`, `limit`), returns `{ total, users }` |
 | `POST` | `/admin/users` | 🔐 Admin | Create a `STAFF`, `AUTHORITY` or `ADMIN` account |
-| `PATCH` | `/admin/users/:id` | 🔐 Admin | Disable (ends its sessions) or re-enable an account |
+| `PATCH` | `/admin/users/:id` | 🔐 Admin | Disable (ends its sessions) or re-enable an account, or assign a staff member's vehicle |
+| `GET` | `/admin/routes` | 🔐 Admin, 🛠️ Authority | All routes, including inactive ones |
+| `GET` | `/admin/vehicles` | 🔐 Admin, 🛠️ Authority | All vehicles |
+| `POST` | `/admin/vehicles` | 🔐 Admin, 🛠️ Authority | Add a vehicle |
+| `PATCH` | `/admin/vehicles/:id` | 🔐 Admin, 🛠️ Authority | Edit or retire a vehicle |
+| `GET` | `/admin/trips` | 🔐 Admin, 🛠️ Authority | Trips on a given day |
+| `GET` | `/admin/tickets` | 🔐 Admin, 🛠️ Authority | Tickets with payment status |
 
 </details>
 
@@ -408,10 +416,10 @@ Admins cannot use `/auth/login` or `/auth/refresh`, and app accounts cannot use 
 | `GET` | `/routes/:id` | 🌐 Public | Route details |
 | `GET` | `/routes/:id/arrivals` | 🌐 Public | Upcoming arrivals |
 | `GET` | `/routes/:id/vehicles` | 🌐 Public | Live vehicles on the route |
-| `POST` / `PATCH` | `/routes`, `/routes/:id` | 🛠️ Authority | Create or update routes |
-| `POST` | `/routes/:id/stops` | 🛠️ Authority | Add a stop to a route |
+| `POST` / `PATCH` | `/routes`, `/routes/:id` | 🛠️ Authority, 🔐 Admin | Create or update routes |
+| `POST` | `/routes/:id/stops` | 🛠️ Authority, 🔐 Admin | Add a stop to a route |
 | `GET` | `/stops/nearby` | 🌐 Public | Stops near a coordinate |
-| `POST` / `PATCH` | `/trips`, `/trips/:id` | 🛠️ Authority | Schedule or update trips |
+| `POST` / `PATCH` | `/trips`, `/trips/:id` | 🛠️ Authority, 🔐 Admin | Schedule or update trips |
 
 </details>
 
@@ -439,30 +447,12 @@ Admins cannot use `/auth/login` or `/auth/refresh`, and app accounts cannot use 
 | --- | --- | --- | --- |
 | `POST` | `/vehicles/:id/location` | Device key | Submit a GPS position |
 | `POST` | `/vehicles/:id/occupancy` | 🎟️ Staff | Report occupancy |
-| `GET` | `/alerts` | 🧑 Passenger, 🛠️ Authority | List alerts |
+| `GET` | `/alerts` | 🧑 Passenger, 🛠️ Authority, 🔐 Admin | List alerts |
 | `PATCH` | `/alerts/:id/read` | 🧑 Passenger | Mark an alert read |
-| `POST` | `/alerts` | 🛠️ Authority | Publish an alert |
-| `GET` | `/ops/dashboard` | 🛠️ Authority | Live operations summary |
-| `GET` | `/reports` | 🛠️ Authority | Route, delay and occupancy reports |
+| `POST` | `/alerts` | 🛠️ Authority, 🔐 Admin | Publish an alert |
+| `GET` | `/ops/dashboard` | 🛠️ Authority, 🔐 Admin | Live operations summary |
+| `GET` | `/reports` | 🛠️ Authority, 🔐 Admin | Route, delay and occupancy reports (an officer's runs are logged in `reports`) |
 | `GET` | `/health` | 🌐 Public | Liveness and database check |
-
-</details>
-
-<details>
-<summary><b>Admin</b></summary>
-
-| Method | Endpoint | Access | Description |
-| --- | --- | --- | --- |
-| `GET` | `/admin/overview` | 🛠️ Authority | Headline counts: users, fleet, today's trips and sales |
-| `GET` | `/admin/users` | 🛠️ Authority | Search and filter users |
-| `POST` | `/admin/users` | 🛠️ Authority | Create a staff or officer account |
-| `PATCH` | `/admin/users/:id` | 🛠️ Authority | Enable/disable an account, assign a staff vehicle |
-| `GET` | `/admin/routes` | 🛠️ Authority | All routes, including inactive ones |
-| `GET` | `/admin/vehicles` | 🛠️ Authority | All vehicles |
-| `POST` | `/admin/vehicles` | 🛠️ Authority | Add a vehicle |
-| `PATCH` | `/admin/vehicles/:id` | 🛠️ Authority | Edit or retire a vehicle |
-| `GET` | `/admin/trips` | 🛠️ Authority | Trips on a given day |
-| `GET` | `/admin/tickets` | 🛠️ Authority | Tickets with payment status |
 
 </details>
 

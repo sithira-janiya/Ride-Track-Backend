@@ -38,10 +38,10 @@ const isoDay = (d) => d.toISOString().slice(0, 10);
 const REPORT_TYPE = { ROUTE_PERFORMANCE: 'ROUTE', DELAYS: 'DELAY', OCCUPANCY: 'OCCUPANCY' };
 
 /**
- * Builds a report for the given period and saves a `reports` row (DFD 7.3).
+ * Builds a report for the given period and, for an officer, saves a `reports` row (DFD 7.3).
  * `from` and `to` are inclusive dates (YYYY-MM-DD); `routeId` narrows it to one route.
  */
-export async function generateReport(officerId, { type, routeId, from, to }) {
+export async function generateReport(user, { type, routeId, from, to }) {
   const start = new Date(`${from}T00:00:00Z`);
   const end = new Date(`${to}T23:59:59Z`);
   if (end < start) throw badRequest('The end date must not be before the start date.');
@@ -111,8 +111,11 @@ export async function generateReport(officerId, { type, routeId, from, to }) {
     };
   }
 
-  await query('INSERT INTO reports (generated_by, route_id, report_type, period_start, period_end) VALUES (?, ?, ?, ?, ?)', [
-    officerId, routeId ?? null, REPORT_TYPE[type], from, to,
-  ]);
+  // the reports log belongs to authority officers (generated_by references authority_officers), so admin runs are not logged
+  if (user.role === 'AUTHORITY') {
+    await query('INSERT INTO reports (generated_by, route_id, report_type, period_start, period_end) VALUES (?, ?, ?, ?, ?)', [
+      user.id, routeId ?? null, REPORT_TYPE[type], from, to,
+    ]);
+  }
   return { type, from, to, ...report };
 }

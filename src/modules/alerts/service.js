@@ -50,9 +50,9 @@ async function notifyDevices(userIds, body) {
   if (dead.length) await query('UPDATE users SET push_token = NULL WHERE push_token IN (?)', [dead]);
 }
 
-/** Passengers see the alerts addressed to them; officers see every alert that has been published. */
+/** Passengers see the alerts addressed to them; officers and admins see every alert that has been published. */
 export async function listAlerts(user, { unread, limit }) {
-  if (user.role === 'AUTHORITY') {
+  if (user.role === 'AUTHORITY' || user.role === 'ADMIN') {
     const rows = await query(`SELECT * FROM delay_alerts ORDER BY created_at DESC, alert_id DESC ${limitRows(limit)}`);
     return rows.map((r) => toAlert(r, true));
   }

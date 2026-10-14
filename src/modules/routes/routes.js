@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { REGION_CODES } from '../../config/regions.js';
-import { requireAuth, requireRole } from '../../middleware/auth.js';
+import { requireAdminOr } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import { send, wrap } from '../../utils/async.js';
 import { getRouteVehicles } from '../vehicles/service.js';
@@ -30,8 +30,7 @@ routesRouter.get(
 
 routesRouter.post(
   '/',
-  requireAuth,
-  requireRole('AUTHORITY'),
+  requireAdminOr('AUTHORITY'),
   validate({
     body: z.object({
       region: region.optional(),
@@ -49,8 +48,7 @@ routesRouter.get('/:id', validate({ params: z.object({ id }) }), wrap(async (req
 
 routesRouter.patch(
   '/:id',
-  requireAuth,
-  requireRole('AUTHORITY'),
+  requireAdminOr('AUTHORITY'),
   validate({
     params: z.object({ id }),
     body: z
@@ -68,8 +66,7 @@ routesRouter.patch(
 
 routesRouter.post(
   '/:id/stops',
-  requireAuth,
-  requireRole('AUTHORITY'),
+  requireAdminOr('AUTHORITY'),
   validate({
     params: z.object({ id }),
     body: z.object({
@@ -111,7 +108,7 @@ stopsRouter.get(
 );
 
 export const tripsRouter = Router();
-tripsRouter.use(requireAuth, requireRole('AUTHORITY'));
+tripsRouter.use(requireAdminOr('AUTHORITY'));
 
 const when = z.coerce.date().transform((d) => d.toISOString());
 

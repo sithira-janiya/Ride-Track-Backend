@@ -154,6 +154,13 @@ describe('auth', () => {
       expect(testOutbox.at(-1).to).toBe('rider@example.com');
     });
 
+    it('never sends a code to an admin, who resets with scripts/create-admin.js', async () => {
+      const before = testOutbox.length;
+      const res = await forgot('admin@ridetrack.test');
+      expect(res.status).toBe(202);
+      expect(testOutbox.length).toBe(before);
+    });
+
     it('does not send another code within a minute', async () => {
       const before = testOutbox.length;
       expect((await forgot('rider@example.com')).status).toBe(202);
@@ -269,10 +276,10 @@ describe('admin', () => {
     expect((await users().set(auth(passenger.token))).status).toBe(403);
     const res = await api().get('/api/v1/admin/users?role=AUTHORITY').set(auth(admin.token));
     expect(res.status).toBe(200);
-    expect(res.body.data.map((u) => u.email)).toContain('officer@ridetrack.test');
-    expect(res.body.data.every((u) => u.role === 'AUTHORITY')).toBe(true);
-    expect(res.body.data[0].passwordHash).toBeUndefined();
-    expect((await api().get('/api/v1/admin/users?q=%25').set(auth(admin.token))).body.data).toHaveLength(0);
+    expect(res.body.data.users.map((u) => u.email)).toContain('officer@ridetrack.test');
+    expect(res.body.data.users.every((u) => u.role === 'AUTHORITY')).toBe(true);
+    expect(res.body.data.users[0].passwordHash).toBeUndefined();
+    expect((await api().get('/api/v1/admin/users?q=%25').set(auth(admin.token))).body.data).toEqual({ total: 0, users: [] });
   });
 
   it('creates staff and officer accounts that can sign in to the app', async () => {
@@ -736,8 +743,14 @@ describe('authority', () => {
   });
 });
 
-describe('admin', () => {
-  const admin = (method, path) => api()[method](`/api/v1/admin${path}`).set(auth(officer.token));
+describe('admin panel', () => {
+  let adminToken;
+  const asOfficer = (method, path) => api()[method](`/api/v1/admin${path}`).set(auth(officer.token));
+  const asAdmin = (method, path) => api()[method](`/api/v1/admin${path}`).set(auth(adminToken));
+
+  beforeAll(async () => {
+    adminToken = (await adminLogin('admin@ridetrack.test')).token;
+  });
 
   it('serves the admin panel', async () => {
     expect((await api().get('/admin')).headers.location).toBe('/admin/');
@@ -747,48 +760,67 @@ describe('admin', () => {
     expect((await api().get('/admin/app.js')).status).toBe(200);
   });
 
-  it('is for authority officers only', async () => {
+  it('is for admins and authority officers, with accounts for admins only', async () => {
     expect((await api().get('/api/v1/admin/overview')).status).toBe(401);
     expect((await api().get('/api/v1/admin/overview').set(auth(staff.token))).status).toBe(403);
-    expect((await api().get('/api/v1/admin/users').set(auth(passenger.token))).status).toBe(403);
+    expect((await asOfficer('get', '/overview')).status).toBe(200);
+    expect((await asAdmin('get', '/overview')).status).toBe(200);
+    expect((await asOfficer('get', '/users')).status).toBe(403);
+    expect((await asOfficer('post', '/users').send({})).status).toBe(403);
+    expect((await asOfficer('patch', `/users/${passenger.user.userId}`).send({ isActive: false })).status).toBe(403);
   });
 
   it('returns overview numbers and lists', async () => {
-    const o = (await admin('get', '/overview')).body.data;
-    expect(o.users).toEqual(expect.objectContaining({ total: expect.any(Number), officers: expect.any(Number) }));
+    const o = (await asOfficer('get', '/overview')).body.data;
+    expect(o.users).toEqual(expect.objectContaining({ total: expect.any(Number), officers: expect.any(Number), admins: expect.any(Number) }));
     expect(o.fleet.routes).toBeGreaterThan(0);
-    const users = (await admin('get', '/users?role=STAFF')).body.data;
+    const users = (await asAdmin('get', '/users?role=STAFF')).body.data;
     expect(users.users.every((u) => u.role === 'STAFF')).toBe(true);
-    expect(users.users[0]).toEqual(expect.objectContaining({ employeeNo: 'ST-001', staffType: 'CONDUCTOR' }));
+    expect(users.users.find((u) => u.employeeNo === 'ST-001')).toEqual(expect.objectContaining({ staffType: 'CONDUCTOR', vehicleId: 101 }));
     expect(users.users[0]).not.toHaveProperty('passwordHash');
-    expect((await admin('get', '/routes')).body.data[0]).toEqual(expect.objectContaining({ stops: expect.any(Number), isActive: true }));
-    expect((await admin('get', `/trips?date=${new Date().toISOString().slice(0, 10)}`)).status).toBe(200);
-    expect((await admin('get', '/tickets')).body.data).toEqual(expect.objectContaining({ total: expect.any(Number), tickets: expect.any(Array) }));
+    expect((await asOfficer('get', '/routes')).body.data[0]).toEqual(expect.objectContaining({ stops: expect.any(Number), isActive: true }));
+    expect((await asOfficer('get', `/trips?date=${new Date().toISOString().slice(0, 10)}`)).status).toBe(200);
+    expect((await asOfficer('get', '/tickets')).body.data).toEqual(expect.objectContaining({ total: expect.any(Number), tickets: expect.any(Array) }));
   });
 
   it('creates staff accounts that can log in, and disables them', async () => {
-    const body = { name: 'New Conductor', email: 'conductor2@ridetrack.test', password: PASSWORD.slice(0, -1) + '9', role: 'STAFF', employeeNo: 'ST-777', organisation: 'Demo Transport Co.', staffType: 'CONDUCTOR', vehicleId: 101 };
-    const created = await admin('post', '/users').send(body);
+    const body = { name: 'Panel Conductor', email: 'conductor3@ridetrack.test', password: PASSWORD.slice(0, -1) + '9', role: 'STAFF', employeeNo: 'ST-777', organisation: 'Demo Transport Co.', staffType: 'CONDUCTOR', vehicleId: 101 };
+    const created = await asAdmin('post', '/users').send(body);
     expect(created.status).toBe(201);
     expect(created.body.data.role).toBe('STAFF');
-    expect((await admin('post', '/users').send(body)).status).toBe(409);
-    expect((await admin('post', '/users').send({ ...body, email: 'x@ridetrack.test', employeeNo: 'ST-778', staffType: undefined })).status).toBe(400);
+    expect((await asAdmin('post', '/users').send(body)).status).toBe(409);
+    expect((await asAdmin('post', '/users').send({ ...body, email: 'x@ridetrack.test', employeeNo: 'ST-778', staffType: undefined })).status).toBe(400);
 
     const login1 = await api().post('/api/v1/auth/login').send({ identifier: body.email, password: body.password });
     expect(login1.status).toBe(200);
     const id = created.body.data.userId;
-    expect((await admin('patch', `/users/${id}`).send({ isActive: false })).body.data.isActive).toBe(false);
+    expect((await asAdmin('patch', `/users/${id}`).send({ vehicleId: 102 })).status).toBe(200);
+    const [{ vehicle_id: vehicleId }] = await query('SELECT vehicle_id FROM staff WHERE user_id = ?', [id]);
+    expect(vehicleId).toBe(102);
+    expect((await asAdmin('patch', `/users/${id}`).send({ isActive: false })).body.data.isActive).toBe(false);
     expect((await api().post('/api/v1/auth/login').send({ identifier: body.email, password: body.password })).status).toBe(401);
     expect((await api().post('/api/v1/auth/refresh').send({ refreshToken: login1.body.data.refreshToken })).status).toBe(401);
-    expect((await admin('patch', `/users/${officer.user.userId}`).send({ isActive: false })).status).toBe(400);
+    expect((await asAdmin('patch', `/users/${officer.user.userId}`).send({ vehicleId: 101 })).status).toBe(400); // only staff ride a vehicle
+  });
+
+  it('lets admins use the operations endpoints the panel calls', async () => {
+    const as = (method, path) => api()[method](`/api/v1${path}`).set(auth(adminToken));
+    expect((await as('get', '/ops/dashboard')).status).toBe(200);
+    expect((await as('get', '/alerts')).status).toBe(200);
+    const day = new Date().toISOString().slice(0, 10);
+    const [{ n: before }] = await query('SELECT COUNT(*) AS n FROM reports');
+    expect((await as('get', `/reports?type=DELAYS&from=${day}&to=${day}`)).status).toBe(200);
+    const [{ n: after }] = await query('SELECT COUNT(*) AS n FROM reports');
+    expect(Number(after)).toBe(Number(before)); // the reports log is for officers only
+    expect((await as('get', '/tickets')).status).toBe(403); // not a passenger
   });
 
   it('manages vehicles', async () => {
-    const v = await admin('post', '/vehicles').send({ regNo: 'NB-9999', type: 'BUS', capacity: 40, routeId: 1 });
+    const v = await asOfficer('post', '/vehicles').send({ regNo: 'NB-9999', type: 'BUS', capacity: 40, routeId: 1 });
     expect(v.status).toBe(201);
     expect(v.body.data).toMatchObject({ regNo: 'NB-9999', routeId: 1, isActive: true });
-    expect((await admin('post', '/vehicles').send({ regNo: 'NB-9999', type: 'BUS', capacity: 40, routeId: 1 })).status).toBe(409);
-    const updated = await admin('patch', `/vehicles/${v.body.data.vehicleId}`).send({ capacity: 45, isActive: false });
+    expect((await asOfficer('post', '/vehicles').send({ regNo: 'NB-9999', type: 'BUS', capacity: 40, routeId: 1 })).status).toBe(409);
+    const updated = await asAdmin('patch', `/vehicles/${v.body.data.vehicleId}`).send({ capacity: 45, isActive: false });
     expect(updated.body.data).toMatchObject({ capacity: 45, isActive: false });
   });
 });

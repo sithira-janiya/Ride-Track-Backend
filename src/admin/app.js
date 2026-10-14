@@ -1,4 +1,5 @@
-// RideTrack admin panel: a small dependency-free SPA over /api/v1. Authority officers only.
+// RideTrack admin panel: a small dependency-free SPA over /api/v1, for admins and authority officers.
+// Admins sign in through /admin/auth and also manage accounts; officers use the app sign-in.
 // All user data is rendered with textContent (via `h`), never innerHTML.
 
 const API = '/api/v1';
@@ -19,14 +20,23 @@ function saveSession(s) {
   store.set('rt.user', session.user ? JSON.stringify(session.user) : null);
 }
 
+const PANEL_ROLES = ['ADMIN', 'AUTHORITY'];
+const isAdmin = () => session.user?.role === 'ADMIN';
+// admin sessions use their own sign-in, refresh and logout endpoints
+const authPath = (action) => `${isAdmin() ? '/admin/auth' : '/auth'}/${action}`;
+
 function logout() {
+  // ends the admin session on the server too; app sessions simply lapse
+  if (isAdmin() && session.refresh) {
+    fetch(`${API}/admin/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ refreshToken: session.refresh }) }).catch(() => {});
+  }
   saveSession({ access: null, refresh: null, user: null });
   showLogin();
 }
 
 let refreshing = null;
 async function refreshTokens() {
-  refreshing ??= fetch(`${API}/auth/refresh`, {
+  refreshing ??= fetch(`${API}${authPath('refresh')}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ refreshToken: session.refresh }),
@@ -49,7 +59,7 @@ async function api(path, { method = 'GET', body, query } = {}, retried = false) 
     body: body ? JSON.stringify(body) : undefined,
   });
   const json = await res.json().catch(() => ({}));
-  if (res.status === 401 && !retried && session.refresh && !path.startsWith('/auth/')) {
+  if (res.status === 401 && !retried && session.refresh && !/^\/(admin\/)?auth\//.test(path)) {
     try {
       await refreshTokens();
       return api(path, { method, body, query }, true);
@@ -199,7 +209,7 @@ const pages = {
       h(
         'div',
         { class: 'stats' },
-        stat('Users', o.users.total, `${o.users.passengers} passengers · ${o.users.staff} staff · ${o.users.officers} officers`),
+        stat('Users', o.users.total, `${o.users.passengers} passengers · ${o.users.staff} staff · ${o.users.officers} officers · ${o.users.admins} admins`),
         stat('Fleet', o.fleet.vehicles, `${o.fleet.routes} active routes · ${o.fleet.stops} stops`),
         stat('Trips today', o.tripsToday.total, `${o.tripsToday.ongoing} ongoing · ${o.tripsToday.delayed} delayed · ${o.tripsToday.cancelled} cancelled`),
         stat('Sales today', o.salesToday.byCurrency.map((c) => fmtMoney(c.revenue, c.currency)).join(' + ') || fmtMoney(0), `${o.salesToday.tickets} paid tickets`),
@@ -251,9 +261,9 @@ const pages = {
 
   async users(page, actions, state) {
     state.page ??= 1;
-    actions.append(h('button', { class: 'primary', onclick: () => newStaffForm() }, 'New staff / officer'));
+    actions.append(h('button', { class: 'primary', onclick: () => newStaffForm() }, 'New account'));
     const q = h('input', { type: 'search', placeholder: 'Search name, email, phone', value: state.q ?? '' });
-    const role = h('select', {}, [['', 'All roles'], ['PASSENGER', 'Passengers'], ['STAFF', 'Staff'], ['AUTHORITY', 'Officers']].map(([v, l]) => h('option', { value: v, selected: (state.role ?? '') === v }, l)));
+    const role = h('select', {}, [['', 'All roles'], ['PASSENGER', 'Passengers'], ['STAFF', 'Staff'], ['AUTHORITY', 'Officers'], ['ADMIN', 'Admins']].map(([v, l]) => h('option', { value: v, selected: (state.role ?? '') === v }, l)));
     const apply = () => { Object.assign(state, { q: q.value.trim(), role: role.value, page: 1 }); render(); };
     q.addEventListener('keydown', (e) => e.key === 'Enter' && apply());
     role.addEventListener('change', apply);
@@ -508,17 +518,20 @@ function pager(state, total, limit) {
 // ---------- forms ----------
 
 function newStaffForm() {
-  openForm('New staff / officer account', [
-    { name: 'role', label: 'Account type', required: true, options: [['STAFF', 'Staff (conductor / inspector)'], ['AUTHORITY', 'Authority officer']] },
+  openForm('New staff, officer or admin account', [
+    { name: 'role', label: 'Account type', required: true, options: [['STAFF', 'Staff (conductor / inspector)'], ['AUTHORITY', 'Authority officer'], ['ADMIN', 'Admin (email, 12+ character password)']] },
     { name: 'staffType', label: 'Staff type (staff only)', options: [['', '—'], ['CONDUCTOR', 'Conductor'], ['INSPECTOR', 'Inspector']] },
     { name: 'name', label: 'Full name', required: true, full: true },
     { name: 'email', label: 'Email', type: 'email' },
     { name: 'phone', label: 'Mobile' },
-    { name: 'employeeNo', label: 'Employee no.', required: true },
-    { name: 'organisation', label: 'Organisation / department', required: true },
+    { name: 'employeeNo', label: 'Employee no. (staff and officers)' },
+    { name: 'organisation', label: 'Organisation / department (staff and officers)' },
     { name: 'password', label: 'Temporary password', type: 'password', required: true, full: true },
   ], async (v) => {
-    if (v.role !== 'STAFF') delete v.staffType;
+    // staff belong to an organisation, officers to a department; admins have neither
+    if (v.role === 'AUTHORITY') v.department = v.organisation;
+    if (v.role !== 'STAFF') (delete v.staffType, delete v.organisation);
+    if (v.role === 'ADMIN') delete v.employeeNo;
     await api('/admin/users', { method: 'POST', body: v });
     toast('Account created.');
     render();
@@ -613,11 +626,13 @@ function alertForm(tripId) {
 // ---------- shell ----------
 
 const TITLES = { overview: 'Overview', users: 'Users', routes: 'Routes', vehicles: 'Vehicles', trips: 'Trips', tickets: 'Tickets', alerts: 'Alerts', reports: 'Reports' };
+// accounts are managed by admins only
+const visiblePages = () => Object.keys(TITLES).filter((n) => n !== 'users' || isAdmin());
 const pageState = {};
 let renderSeq = 0;
 
 async function render() {
-  const name = TITLES[location.hash.slice(1)] ? location.hash.slice(1) : 'overview';
+  const name = visiblePages().includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
   const seq = ++renderSeq;
   document.querySelectorAll('#nav a').forEach((a) => {
     const current = a.getAttribute('href') === `#${name}`;
@@ -642,7 +657,7 @@ async function render() {
 
 // Previous / Next buttons at the foot of every page, in menu order
 function pageNav(name) {
-  const names = Object.keys(TITLES);
+  const names = visiblePages();
   const i = names.indexOf(name);
   const link = (target, label, cls) => (target
     ? h('a', { href: `#${target}`, class: `page-nav-btn ${cls}` }, label)
@@ -662,6 +677,7 @@ function showShell() {
   $('#login').hidden = true;
   $('#shell').hidden = false;
   $('#me-name').textContent = session.user?.name ?? '';
+  document.querySelectorAll('#nav a').forEach((a) => (a.hidden = !visiblePages().includes(a.getAttribute('href').slice(1))));
   render();
 }
 
@@ -672,8 +688,14 @@ $('#login-form').addEventListener('submit', async (e) => {
   err.hidden = true;
   form.querySelector('button').disabled = true;
   try {
-    const data = await api('/auth/login', { method: 'POST', body: { identifier: form.identifier.value, password: form.password.value } });
-    if (data.user.role !== 'AUTHORITY') throw new Error('Only authority officers can use the admin panel.');
+    const identifier = form.identifier.value;
+    const password = form.password.value;
+    // officers use the app sign-in; admins are refused there with the same error, so try the admin sign-in next
+    const data = await api('/auth/login', { method: 'POST', body: { identifier, password } }).catch((ex) => {
+      if (!identifier.includes('@')) throw ex;
+      return api('/admin/auth/login', { method: 'POST', body: { email: identifier, password } }).catch(() => { throw ex; });
+    });
+    if (!PANEL_ROLES.includes(data.user.role)) throw new Error('Only admins and authority officers can use the admin panel.');
     saveSession({ access: data.accessToken, refresh: data.refreshToken, user: data.user });
     form.reset();
     showShell();
@@ -723,7 +745,7 @@ $('#forgot-form').addEventListener('submit', async (e) => {
       method: 'POST',
       body: { identifier: form.identifier.value, code: form.code.value, password: form.password.value },
     });
-    if (data.user.role !== 'AUTHORITY') throw new Error('Password changed. Only authority officers can use the admin panel.');
+    if (!PANEL_ROLES.includes(data.user.role)) throw new Error('Password changed. Only admins and authority officers can use the admin panel.');
     saveSession({ access: data.accessToken, refresh: data.refreshToken, user: data.user });
     showForgot(false);
     showShell();
@@ -738,5 +760,5 @@ $('#forgot-form').addEventListener('submit', async (e) => {
 $('#logout').addEventListener('click', logout);
 window.addEventListener('hashchange', () => session.access && render());
 
-if (session.access && session.user?.role === 'AUTHORITY') showShell();
+if (session.access && PANEL_ROLES.includes(session.user?.role)) showShell();
 else showLogin();
