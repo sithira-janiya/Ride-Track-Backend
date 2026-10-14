@@ -14,7 +14,20 @@ const routeFiles = walk('src/modules').filter((f) => f.endsWith('routes.js'));
 const endpoints = routeFiles.reduce((n, f) => n + (read(f).match(/^\s*\w+[Rr]outer\.(get|post|put|patch|delete)\(|^\s*router\.(get|post|put|patch|delete)\(/gm) ?? []).length, 0);
 const tables = (read('db/schema.sql').match(/CREATE TABLE/g) ?? []).length;
 const modules = fs.readdirSync(path.join(root, 'src/modules')).length;
-const tests = walk('tests').filter((f) => f.endsWith('.test.js')).reduce((n, f) => n + (read(f).match(/^\s*(it|test)\(/gm) ?? []).length, 0);
+// it.each([...]) runs one test per row: count the array's top-level elements
+const eachRows = (src) => [...src.matchAll(/^\s*(?:it|test)\.each\(\[/gm)].reduce((n, m) => {
+  let depth = 1, rows = 0, item = false;
+  for (let i = m.index + m[0].length; i < src.length && depth > 0; i++) {
+    const c = src[i];
+    if ('[{('.includes(c)) { if (depth === 1) item = true; depth++; }
+    else if (')}]'.includes(c)) depth--;
+    else if (depth === 1 && c === ',') { if (item) rows++; item = false; }
+    else if (depth === 1 && /\S/.test(c)) item = true;
+  }
+  return n + rows + (item ? 1 : 0);
+}, 0);
+const tests = walk('tests').filter((f) => f.endsWith('.test.js'))
+  .reduce((n, f) => { const src = read(f); return n + (src.match(/^\s*(it|test)\(/gm) ?? []).length + eachRows(src); }, 0);
 const jobs = (read('src/jobs/index.js').match(/^\s*cron\.schedule/gm) ?? []).length;
 const deps = Object.keys(pkg.dependencies).length;
 
