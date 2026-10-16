@@ -255,8 +255,11 @@ describe('admin', () => {
     expect(rotated.status).toBe(200);
     expect((await api().post('/api/v1/admin/auth/refresh').send({ refreshToken: refresh })).status).toBe(401);
     const hash = crypto.createHash('sha256').update(rotated.body.data.refreshToken).digest('hex');
-    const [{ hours }] = await query('SELECT TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), expires_at) / 60 AS hours FROM refresh_tokens WHERE token_hash = ?', [hash]);
-    expect(Number(hours)).toBeLessThanOrEqual(env.adminRefreshTtlHours);
+    // measured in JS so the test runs on both MySQL and SQL Server
+    const [{ expires_at: expiresAt }] = await query('SELECT expires_at FROM refresh_tokens WHERE token_hash = ?', [hash]);
+    const hours = (new Date(expiresAt).getTime() - Date.now()) / 3600000;
+    expect(hours).toBeGreaterThan(0);
+    expect(hours).toBeLessThanOrEqual(env.adminRefreshTtlHours + 1 / 60); // the column rounds to the second
 
     // an app refresh token is refused by the admin endpoint and is not used up by the attempt
     const app = await login('passenger@ridetrack.test');

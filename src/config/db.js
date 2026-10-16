@@ -206,8 +206,9 @@ export const withTransaction = (fn) => db.transaction(fn);
 
 /** Inserts many rows with as few statements as each database allows. `conn` is optional (inside a transaction). */
 export async function insertMany(table, columns, rows, conn = null) {
-  // SQL Server takes at most 1000 rows per VALUES list and 2100 parameters per statement
-  const perStatement = isMssql ? Math.min(1000, Math.floor(2000 / columns.length)) : 1000;
+  // SQL Server allows 2100 parameters per statement, but compiles big VALUES lists slowly: 200 parameters per statement
+  // seeds about 4x faster than 2000 (37s -> 9s on SQL Server Express)
+  const perStatement = isMssql ? Math.max(1, Math.floor(200 / columns.length)) : 1000;
   const tuple = `(${columns.map(() => '?').join(', ')})`;
   for (let i = 0; i < rows.length; i += perStatement) {
     const chunk = rows.slice(i, i + perStatement);
