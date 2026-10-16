@@ -302,6 +302,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `PAYMENT_GATEWAY`, `PAYMENT_GATEWAY_KEY` | Gateway selection and webhook signing key (`mock` for development) |
 | `DEVICE_API_KEY` | Shared key GPS devices send as `x-device-key` |
 | `FCM_SERVICE_ACCOUNT` | Optional Firebase service-account JSON for push notifications |
+| `GOOGLE_TRANSLATE_API_KEY` | Optional Google Cloud Translation key: alerts reach each passenger in their language (`en`, `si`, `ta`) |
 | `RESEND_API_KEY`, `MAIL_FROM` | Optional [Resend](https://resend.com) key and sender for password reset emails; without a key, codes are printed to the log in development |
 | `ENABLE_JOBS` | Toggle background jobs |
 

@@ -67,6 +67,8 @@ export const env = {
   /** OAuth client IDs (comma-separated) whose Google ID tokens `POST /auth/google` accepts. Empty = Google sign-in off. */
   googleClientIds: (process.env.GOOGLE_CLIENT_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   fcmServiceAccount: process.env.FCM_SERVICE_ACCOUNT ?? '',
+  /** Google Cloud Translation API key. When set, alerts reach each passenger in their chosen language. */
+  googleTranslateApiKey: process.env.GOOGLE_TRANSLATE_API_KEY ?? '',
   /** Resend (https://resend.com) API key for sending password reset emails. Empty = codes are only logged outside production. */
   resendApiKey: process.env.RESEND_API_KEY ?? '',
   mailFrom: process.env.MAIL_FROM ?? 'RideTrack <no-reply@ridetrack.app>',
